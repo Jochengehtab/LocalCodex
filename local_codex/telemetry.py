@@ -1,8 +1,8 @@
-"""Small in-memory telemetry surface for the optional Windows monitor.
+"""Small in-memory telemetry surface for the optional native monitor.
 
-The monitor only consumes short reasoning *summaries*.  It deliberately does not
-retain or expose raw reasoning text.  This module has no disk writes and is kept
-independent from inference so a closed monitor cannot slow down a turn.
+Reasoning content is intentionally neither parsed nor retained.  This module has
+no disk writes and is kept independent from inference so a closed monitor cannot
+slow down a turn.
 """
 
 from __future__ import annotations
@@ -13,26 +13,6 @@ import time
 from typing import Any
 
 from .usage import TokenUsage
-
-
-MAX_SUMMARY_CHARS = 700
-
-
-def _summary_text(value: Any) -> str:
-    """Flatten the OpenAI/Ollama reasoning-summary shapes into a safe preview."""
-    if isinstance(value, str):
-        return value
-    if not isinstance(value, list):
-        return ""
-    parts: list[str] = []
-    for part in value:
-        if isinstance(part, str):
-            parts.append(part)
-        elif isinstance(part, dict):
-            text = part.get("text") or part.get("summary_text")
-            if isinstance(text, str):
-                parts.append(text)
-    return "".join(parts)
 
 
 class TelemetryHub:
@@ -55,12 +35,10 @@ class TelemetryHub:
             "updated_at": time.time(),
             "estimated_output_tokens": 0,
             "estimated_visible_tokens": 0,
-            "estimated_reasoning_tokens": 0,
             "input_tokens": None,
             "output_tokens": None,
             "tokens_per_second": None,
             "tokens_per_second_estimated": False,
-            "thinking_summary": "",
             "last_tool": None,
             "comparison_cost_usd": None,
             "comparison_model": None,
@@ -70,7 +48,14 @@ class TelemetryHub:
             "ollama_version": None,
         }
 
-    def start(self, *, model: str, session_id: str, turn_id: str) -> None:
+    def start(
+        self,
+        *,
+        model: str,
+        session_id: str,
+        turn_id: str,
+        session_statistics: dict[str, Any] | None = None,
+    ) -> None:
         now = time.time()
         with self._lock:
             self._state = self._idle_state()
@@ -82,7 +67,14 @@ class TelemetryHub:
                 turn_id=turn_id,
                 started_at=now,
                 updated_at=now,
+                session_statistics=dict(session_statistics or {}),
             )
+
+    def update_session_statistics(self, session_id: str, statistics: dict[str, Any]) -> None:
+        with self._lock:
+            if self._state.get("session_id") == session_id:
+                self._state["session_statistics"] = dict(statistics)
+                self._state["updated_at"] = time.time()
 
     def phase(self, value: str, *, tool: str | None = None) -> None:
         with self._lock:
@@ -103,39 +95,6 @@ class TelemetryHub:
             self._state["estimated_visible_tokens"] += estimate
             self._state["generation_started_at"] = self._state["generation_started_at"] or now
             self._state["updated_at"] = now
-
-    def reasoning_summary_delta(self, text: str) -> None:
-        if not text:
-            return
-        with self._lock:
-            now = time.time()
-            self._state["phase"] = "thinking"
-            combined = self._state["thinking_summary"] + text
-            self._state["thinking_summary"] = combined[-MAX_SUMMARY_CHARS:]
-            # Reasoning summaries are a separate stream from the assistant's
-            # visible answer.  Do not add their characters to output_tokens:
-            # doing so made the live estimate disagree with Ollama's final
-            # usage counter.
-            self._state["estimated_reasoning_tokens"] += max(1, len(text) // 4)
-            self._state["generation_started_at"] = self._state["generation_started_at"] or now
-            self._state["updated_at"] = now
-
-    def reasoning_item(self, item: dict[str, Any]) -> None:
-        summary = _summary_text(item.get("summary"))
-        if not summary:
-            return
-        with self._lock:
-            existing = self._state["thinking_summary"]
-            # Servers often send the same summary first as deltas and once as
-            # the completed reasoning item.  Prefer the completed spelling
-            # instead of showing it twice in the compact tray preview.
-            if summary.endswith(existing) or existing.endswith(summary):
-                combined = summary if len(summary) >= len(existing) else existing
-            else:
-                combined = (existing + "\n" + summary).strip()
-            self._state["phase"] = "thinking"
-            self._state["thinking_summary"] = combined[-MAX_SUMMARY_CHARS:]
-            self._state["updated_at"] = time.time()
 
     def update_ollama_runtime(self, payload: dict[str, Any], version: str | None = None) -> None:
         models = payload.get("models") if isinstance(payload, dict) else None
@@ -227,7 +186,7 @@ class TelemetryHub:
             else None
         )
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "active": value["active"],
             "phase": value["phase"],
             "model": value["model"],
@@ -237,12 +196,10 @@ class TelemetryHub:
             "updated_at": value["updated_at"],
             "elapsed_seconds": value["elapsed_seconds"],
             "estimated_output_tokens": value["estimated_output_tokens"],
-            "estimated_reasoning_tokens": value["estimated_reasoning_tokens"],
             "input_tokens": value["input_tokens"],
             "output_tokens": value["output_tokens"],
             "tokens_per_second": value["tokens_per_second"],
             "tokens_per_second_estimated": value["tokens_per_second_estimated"],
-            "thinking_summary": value["thinking_summary"],
             "last_tool": value["last_tool"],
             "comparison_cost_usd": value["comparison_cost_usd"],
             "comparison_model": value["comparison_model"],
@@ -251,13 +208,12 @@ class TelemetryHub:
                 "active": value["active"], "phase": value["phase"], "model": value["model"],
                 "turn_id": value["turn_id"], "session_id": value["session_id"],
                 "elapsed_seconds": value["elapsed_seconds"], "last_tool": value["last_tool"],
-                "thinking_summary": value["thinking_summary"], "error": value["error"],
+                "error": value["error"],
             },
             "tokens": {
                 "input": value["input_tokens"], "output": value["output_tokens"],
                 "estimated_output": value["estimated_output_tokens"],
                 "estimated_visible_output": value["estimated_visible_tokens"],
-                "estimated_reasoning": value["estimated_reasoning_tokens"],
                 "exact": value["output_tokens"] is not None,
                 "source": "ollama.responses.usage" if value["output_tokens"] is not None else "ollama.responses.stream",
             },
@@ -273,6 +229,15 @@ class TelemetryHub:
             },
             "ollama_runtime": value["ollama_runtime"],
             "ollama_version": value["ollama_version"],
+            "session": {
+                **value.get("session_statistics", {}),
+                "live_output_tokens": (
+                    int(value.get("session_statistics", {}).get("output_tokens", 0))
+                    + int(value["estimated_output_tokens"])
+                    if value["active"] else
+                    int(value.get("session_statistics", {}).get("output_tokens", 0))
+                ),
+            },
         }
 
 
@@ -280,7 +245,7 @@ class TelemetrySSEParser:
     """Incrementally observes useful public Responses stream events.
 
     Full stream data remains with the protocol transformer; this parser only
-    watches summary and output text deltas for the side-channel dashboard.
+    watches only output text and tool deltas for the side-channel dashboard.
     """
 
     def __init__(self, hub: TelemetryHub | None) -> None:
@@ -314,12 +279,7 @@ class TelemetrySSEParser:
         if not isinstance(event, dict):
             return
         event_type = str(event.get("type", "")).lower()
-        item = event.get("item")
-        if isinstance(item, dict) and item.get("type") == "reasoning":
-            self.hub.reasoning_item(item)
-        if event_type in {"response.reasoning_summary_text.delta", "response.reasoning_summary.delta"}:
-            self.hub.reasoning_summary_delta(str(event.get("delta", "")))
-        elif event_type == "response.output_text.delta":
+        if event_type == "response.output_text.delta":
             self.hub.output_delta(str(event.get("delta", "")))
         elif "function_call" in event_type:
             self.hub.phase("tool")

@@ -19,7 +19,7 @@ tatsächlich von Codex geladene Konfiguration. Eine erfolgreiche Sitzung beginnt
 `codex` und nicht `codex-local` gestartet.
 
 Das isolierte lokale Profil vertraut dem WSL-Home `/home/jochen` und dem Launcher-Projekt
-`/home/jochen/llm`, sodass ein Start aus `~` nicht in einer blockierenden Trust-Auswahl landet.
+das jeweilige Installations- und Benutzerverzeichnis, sodass ein Start aus `~` nicht in einer blockierenden Trust-Auswahl landet.
 Für ein anderes Projekt kann Codex weiterhin einmalig dessen Verzeichnis-Vertrauen abfragen.
 
 Weitere Codex-Argumente werden unverändert weitergereicht:
@@ -36,11 +36,10 @@ einem fehlgeschlagenen Preflight fragt ein interaktives Terminal vor dem Fortset
 wird sicher abgebrochen. `--force` übergeht nur diese Prüfung, nicht die lokale Provider-Sperre.
 
 Beim Start erscheint zusätzlich der moderne native **Local Codex Monitor** für Windows.
-Das WPF-Dashboard zeigt Modell und Phase, Input-/Output-Tokens, Live-Tokens/s, TTFT,
-eine Throughput-Kurve, Ollama-Modell-/VRAM-/Kontextdaten, Denkzusammenfassung und
-Vergleichsersparnis. Schließen minimiert ins Tray; ein Doppelklick auf das Tray-Symbol öffnet
-das Dashboard wieder. Der Tab **Einstellungen** bietet Systemstandard-, Dunkel- und Hell-Theme,
-Routerstatus, manuelle Aktualisierung, Logzugriff und sauberes Beenden.
+Das native C++-Dashboard auf Basis von Dear ImGui, SDL3 und ImPlot zeigt Modell und Phase,
+Sitzungs-Input/-Output, Live-Tokens/s, TTFT, Throughput, Ollama-Laufzeitdaten und
+Vergleichsersparnis. Die Tabs **Historie** und **Einstellungen** bieten Sitzungsfilter,
+CSV-/JSON-Export sowie Systemstandard-, Dunkel- und Hell-Theme.
 
 Livewerte mit `~` sind Schätzungen aus dem bereits laufenden Ollama-Responses-Stream. Nach dem
 Turn werden Input und Output durch Ollamas exakte Usage-Werte ersetzt. Modell, Quantisierung,
@@ -48,7 +47,8 @@ VRAM und Kontext kommen direkt aus Ollamas `/api/ps`. Die aktuelle Responses-Sch
 liefert keine `eval_duration`; deshalb wird die finale Geschwindigkeit aus exakten Tokens und
 gemessener Streamzeit berechnet und entsprechend gekennzeichnet. Codex-interne Titelanfragen
 werden weiterhin für die 24h-/Kostenstatistik gezählt, ersetzen aber nicht mehr den sichtbaren
-Chat-Turn im Dashboard. Es gibt keine zweite
+Chat-Turn im Dashboard. Reasoning-Inhalte werden weder angefordert noch gespeichert oder
+angezeigt. Es gibt keine zweite
 Modellanfrage und keine Datenbankwrites pro Token.
 
 Mehrere Codex-Fenster teilen sich genau einen Monitor und einen Router. Nach der letzten Sitzung
@@ -116,7 +116,7 @@ mit OpenAIs Reasoning-Tokens gleichgesetzt werden.
 Für eine Neuinstallation der Python-Abhängigkeiten:
 
 ```bash
-cd /home/jochen/llm
+cd /pfad/zu/LocalCodex
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements-local-codex.txt
 ./.venv/bin/python start_codex.py --setup --benchmark
@@ -150,8 +150,8 @@ ausführen; dabei werden die Ollama-Aliase mit dem neuen `num_ctx` neu erstellt.
 - `local_codex/app.py` stellt `/v1/models` und `/v1/responses` nur auf `127.0.0.1:18081` bereit.
   Weil Codex 0.151 MCP-Werkzeuge für neuere OpenAI-Modelle verzögert lädt, führt der Router die
   beiden lokalen Web-Tool-Calls für Qwen selbst aus und gibt erst die fertige Antwort zurück.
-- `windows/LocalCodexMonitor` enthält die .NET-10-WPF-Singleton-App. Das Setup veröffentlicht
-  sie nach `%LOCALAPPDATA%\LocalCodexMonitor`; das UI pollt nur den flüchtigen
+- `monitor` enthält die plattformübergreifende C++20-Singleton-App. Releases veröffentlichen
+  sie nach `%LOCALAPPDATA%\LocalCodex` beziehungsweise ins Linux-Installationsverzeichnis; das UI pollt nur den flüchtigen
   `/monitor/snapshot`-Status mit maximal vier Anfragen pro Sekunde.
 - `local_codex/monitor.py` koordiniert parallele Launcher über kurzlebige Heartbeat-Leases,
   damit nicht das zuerst geschlossene Codex-Fenster den gemeinsamen Router beendet.
@@ -198,15 +198,14 @@ Websuche, Docker, Such-API, SSRF-Schutz und MCP-Registrierung prüfen:
 codex-local --search-doctor
 ```
 
-Monitorinstallation, WPF-EXE, Router und Windows→WSL-Verbindung prüfen:
+Monitorinstallation, native EXE, Router und Windows→WSL-Verbindung prüfen:
 
 ```bash
 codex-local --monitor-doctor
 ```
 
-Das Monitor-Log liegt unter
-`%LOCALAPPDATA%\LocalCodexMonitor\logs\monitor.log`, das Router-Log unter
-`.codex-local/state/router.log`.
+Monitor-Einstellungen und Exporte liegen unter dem plattformspezifischen SDL-Anwendungsverzeichnis;
+das Router-Log liegt unter `.codex-local/state/router.log`.
 
 Tokenverbrauch und die geschätzte Tokenkosten-Ersparnis gegenüber GPT-5.6 Luna anzeigen:
 

@@ -19,6 +19,8 @@ __pycache__/
 cache/
 *.wav
 
-# Windows build output
-windows/LocalCodexMonitor/bin/
-windows/LocalCodexMonitor/obj/
+# Native CMake output and release staging
+build/
+out/
+dist/
+imgui.ini

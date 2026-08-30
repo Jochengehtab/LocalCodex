@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - id: version
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          test "$GITHUB_REF_NAME" = "v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  core:
+    needs: validate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements-local-codex.txt
+      - run: python -m unittest discover -s tests -v
+        env:
+          LOCAL_CODEX_LIVE_TESTS: "0"
+      - run: bash -n install.sh && ./install.sh --dry-run --version "${{ needs.validate.outputs.version }}" --yes
+      - run: |
+          tar --exclude=.git --exclude=.github --exclude=.venv --exclude=.codex-local --exclude=build \
+            -czf "localcodex-core-v${{ needs.validate.outputs.version }}.tar.gz" .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: core
+          path: localcodex-core-*.tar.gz
+
+  monitor:
+    needs: validate
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64
+          - os: windows-2025
+            platform: windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libx11-dev libxext-dev libasound2-dev
+      - run: cmake -S . -B build -DLOCALCODEX_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build --config Release --parallel 2
+      - run: ctest --test-dir build -C Release --output-on-failure
+      - name: Windows installer dry run
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./install.ps1 -DryRun -Version "${{ needs.validate.outputs.version }}"
+      - run: cmake --install build --config Release --prefix stage
+      - name: Package Linux monitor
+        if: runner.os == 'Linux'
+        run: tar -C stage -czf "localcodex-monitor-${{ matrix.platform }}-v${{ needs.validate.outputs.version }}.tar.gz" .
+      - name: Package Windows monitor
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path stage/* -DestinationPath "localcodex-monitor-${{ matrix.platform }}-v${{ needs.validate.outputs.version }}.zip"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: monitor-${{ matrix.platform }}
+          path: localcodex-monitor-*
+
+  publish:
+    needs: [validate, core, monitor]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          path: dist
+          merge-multiple: true
+      - run: python scripts/release_manifest.py "${{ needs.validate.outputs.version }}" dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: dist/*
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${{ needs.validate.outputs.version }}" dist/* --verify-tag --generate-notes --title "LocalCodex v${{ needs.validate.outputs.version }}"

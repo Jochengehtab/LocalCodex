@@ -101,6 +101,16 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn(b"response.completed", rendered)
         self.assertTrue(rendered.endswith(b"data: [DONE]\n\n"))
 
+    def test_reasoning_items_and_events_are_removed(self):
+        payload = "\n\n".join([
+            'event: response.reasoning_summary_text.delta\ndata: {"type":"response.reasoning_summary_text.delta","delta":"secret"}',
+            'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"text":"secret"}]}}',
+            'event: response.completed\ndata: {"type":"response.completed","response":{"id":"r","output":[{"type":"reasoning","summary":[{"text":"secret"}]},{"type":"message","content":[]}]}}',
+        ])
+        rendered, completed = transform_sse(payload, set())
+        self.assertNotIn(b"secret", rendered)
+        self.assertEqual(["message"], [item["type"] for item in completed["output"]])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-LOCAL_HOME = ROOT / ".codex-local"
+LOCAL_HOME = Path(os.environ.get("LOCAL_CODEX_HOME", ROOT / ".codex-local")).expanduser().resolve()
 STATE_DIR = LOCAL_HOME / "state"
 MODELS_DIR = LOCAL_HOME / "models"
 

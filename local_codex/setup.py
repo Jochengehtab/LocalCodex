@@ -37,8 +37,8 @@ FINAL_MODELS = {
 # these profiles is safe instead of silently selecting an OOM-prone maximum.
 CONTEXT_CANDIDATES = (8192, 16384, 32768, 65536, 131072)
 GIB = 1024 * 1024 * 1024
-CONFIG_VERSION = 9
-MONITOR_PROJECT = ROOT / "windows" / "LocalCodexMonitor" / "LocalCodexMonitor.csproj"
+CONFIG_VERSION = 10
+VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 
 
 def run(command: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -316,9 +316,7 @@ def generate_model_catalog(context: int) -> None:
     template["upgrade"] = None
     template["priority"] = 1
     template["default_reasoning_level"] = "xhigh"
-    # Request summaries rather than raw thought so the optional local monitor
-    # can expose useful progress without expanding Codex context.
-    template["default_reasoning_summary"] = "auto"
+    template.pop("default_reasoning_summary", None)
     supported_reasoning = template.get("supported_reasoning_levels")
     if isinstance(supported_reasoning, list) and not any(
         isinstance(item, dict) and item.get("effort") == "xhigh"
@@ -471,47 +469,86 @@ def ensure_search_secret() -> None:
         search_env.chmod(0o600)
 
 
-def install_windows_monitor() -> dict[str, Any]:
-    """Publish the native monitor to Windows LocalAppData without blocking Codex on failure."""
-    result: dict[str, Any] = {"installed": False}
+def _existing_monitor() -> dict[str, Any] | None:
+    try:
+        runtime = json.loads((LOCAL_HOME / "runtime.json").read_text(encoding="utf-8"))
+        monitor = runtime.get("monitor")
+        executable = monitor.get("wsl_executable") or monitor.get("executable")
+        if isinstance(monitor, dict) and isinstance(executable, str) and Path(executable).exists():
+            return monitor
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def install_native_monitor(build_monitor: bool = False) -> dict[str, Any]:
+    """Install a prebuilt or explicitly developer-built Dear ImGui monitor."""
+    result: dict[str, Any] = {"installed": False, "framework": "dear-imgui-sdl3"}
+    is_wsl = bool(os.environ.get("WSL_DISTRO_NAME"))
+    existing = _existing_monitor()
+    prebuilt_override = os.environ.get("LOCAL_CODEX_MONITOR_EXE")
+    if not build_monitor and existing and not prebuilt_override:
+        return existing
+
+    if not is_wsl:
+        candidate = Path(os.environ.get(
+            "LOCAL_CODEX_MONITOR_EXE",
+            ROOT / "build" / "native" / "monitor" / "localcodex-monitor",
+        ))
+        if build_monitor:
+            run(["cmake", "-S", str(ROOT), "-B", str(ROOT / "build" / "native"),
+                 "-DCMAKE_BUILD_TYPE=Release", "-DLOCALCODEX_BUILD_TESTS=OFF"])
+            run(["cmake", "--build", str(ROOT / "build" / "native"), "--config", "Release"])
+        if not candidate.exists():
+            result["error"] = "Monitor-Binary fehlt; setup --build-monitor baut sie lokal"
+            return result
+        target = LOCAL_HOME / "monitor" / f"v{VERSION}" / "localcodex-monitor"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(candidate, target)
+        target.chmod(0o755)
+        result.update({"installed": True, "executable": str(target), "platform": "linux-x64"})
+        return result
+
     powershell = shutil.which("powershell.exe")
-    dotnet = shutil.which("dotnet.exe")
+    cmake = shutil.which("cmake.exe")
     wslpath = shutil.which("wslpath")
-    if not powershell or not dotnet or not wslpath or not MONITOR_PROJECT.exists():
-        result["error"] = "powershell.exe, dotnet.exe, wslpath oder Monitorprojekt fehlt"
+    if not powershell or not wslpath:
+        result["error"] = "powershell.exe oder wslpath fehlt"
         return result
     try:
         local_app_data = run([
             powershell, "-NoProfile", "-Command",
             "[Environment]::GetFolderPath('LocalApplicationData')",
         ]).stdout.strip()
-        # Publish into a versioned directory.  The monitor is intentionally a
-        # tray singleton and may still be running while setup refreshes the
-        # router; replacing its loaded DLL in-place would fail on Windows.
-        # The next Codex start reads this runtime entry and launches the new
-        # side-by-side build without interrupting the current turn.
-        install_windows = str(PureWindowsPath(local_app_data) / "LocalCodexMonitor" / f"app-v{CONFIG_VERSION}")
-        project_windows = run([wslpath, "-w", str(MONITOR_PROJECT)]).stdout.strip()
-        run([
-            dotnet, "publish", project_windows, "-c", "Release", "-r", "win-x64",
-            "--self-contained", "false", "--nologo", "-o", install_windows,
-            "-p:DebugType=None", "-p:DebugSymbols=false",
-        ])
-        executable_windows = str(PureWindowsPath(install_windows) / "LocalCodexMonitor.exe")
+        build_dir = ROOT / "build" / "windows-monitor"
+        candidate = build_dir / "monitor" / "Release" / "localcodex-monitor.exe"
+        if build_monitor:
+            if not cmake:
+                raise RuntimeError("cmake.exe fehlt")
+            source_windows = run([wslpath, "-w", str(ROOT)]).stdout.strip()
+            build_windows = run([wslpath, "-w", str(build_dir)]).stdout.strip()
+            run([cmake, "-S", source_windows, "-B", build_windows,
+                 "-A", "x64", "-DLOCALCODEX_BUILD_TESTS=OFF"])
+            run([cmake, "--build", build_windows, "--config", "Release", "--parallel"])
+        prebuilt = prebuilt_override
+        if prebuilt:
+            candidate = Path(prebuilt)
+        if not candidate.exists():
+            result["error"] = "Windows-Monitor fehlt; setup --build-monitor baut ihn lokal"
+            return result
+        install_windows = str(PureWindowsPath(local_app_data) / "LocalCodex" / "versions" / f"v{VERSION}")
+        install_wsl = Path(run([wslpath, "-u", install_windows]).stdout.strip())
+        install_wsl.mkdir(parents=True, exist_ok=True)
+        executable_windows = str(PureWindowsPath(install_windows) / "localcodex-monitor.exe")
         executable_wsl = run([wslpath, "-u", executable_windows]).stdout.strip()
-        ready_windows = str(PureWindowsPath(local_app_data) / "LocalCodexMonitor" / "monitor.ready.json")
-        ready_wsl = run([wslpath, "-u", ready_windows]).stdout.strip()
-        log_windows = str(PureWindowsPath(local_app_data) / "LocalCodexMonitor" / "logs" / "monitor.log")
-        log_wsl = run([wslpath, "-u", log_windows]).stdout.strip()
+        if candidate.resolve() != Path(executable_wsl).resolve():
+            shutil.copy2(candidate, executable_wsl)
         result.update({
             "installed": Path(executable_wsl).exists(),
             "windows_executable": executable_windows,
             "wsl_executable": executable_wsl,
-            "windows_ready_file": ready_windows,
-            "wsl_ready_file": ready_wsl,
-            "windows_log_file": log_windows,
-            "wsl_log_file": log_wsl,
-            "target_framework": "net10.0-windows",
+            "platform": "windows-x64",
+            "version": VERSION,
         })
         if not result["installed"]:
             result["error"] = "Veröffentlichte Monitor-EXE wurde nicht gefunden"
@@ -520,7 +557,7 @@ def install_windows_monitor() -> dict[str, Any]:
     return result
 
 
-def refresh_config() -> dict[str, Any]:
+def refresh_config(build_monitor: bool = False) -> dict[str, Any]:
     LOCAL_HOME.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     runtime_path = LOCAL_HOME / "runtime.json"
@@ -536,7 +573,7 @@ def refresh_config() -> dict[str, Any]:
     runtime["context_window"] = context
     runtime["models"] = FINAL_MODELS
     runtime["settings"] = asdict(SETTINGS)
-    runtime["monitor"] = install_windows_monitor()
+    runtime["monitor"] = install_native_monitor(build_monitor)
     runtime["config_version"] = CONFIG_VERSION
     runtime_path.write_text(
         json.dumps(runtime, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -546,7 +583,7 @@ def refresh_config() -> dict[str, Any]:
     return runtime
 
 
-def install(context: int | None, benchmark: bool) -> dict[str, Any]:
+def install(context: int | None, benchmark: bool, build_monitor: bool = False) -> dict[str, Any]:
     verify_prerequisites()
     LOCAL_HOME.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -572,7 +609,7 @@ def install(context: int | None, benchmark: bool) -> dict[str, Any]:
         "models": FINAL_MODELS,
         "hardware_benchmark": report,
         "settings": asdict(SETTINGS),
-        "monitor": install_windows_monitor(),
+        "monitor": install_native_monitor(build_monitor),
     }
     runtime_path.write_text(
         json.dumps(runtime, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -587,12 +624,13 @@ def main() -> None:
     parser.add_argument("--benchmark", action="store_true", help="Test 8K, 16K, 32K, 64K and 128K")
     parser.add_argument("--context", type=int, choices=CONTEXT_CANDIDATES)
     parser.add_argument("--refresh-config", action="store_true", help="Refresh Codex and MCP config without recreating Ollama models")
+    parser.add_argument("--build-monitor", action="store_true", help="Build the Dear ImGui monitor locally")
     args = parser.parse_args()
     if args.refresh_config:
-        runtime = refresh_config()
+        runtime = refresh_config(args.build_monitor)
         print(f"Lokale Codex-Konfiguration aktualisiert: {runtime['context_window']} Tokens Kontext")
         return
-    runtime = install(args.context, args.benchmark)
+    runtime = install(args.context, args.benchmark, args.build_monitor)
     print(f"Lokaler Codex eingerichtet: {runtime['context_window']} Tokens Kontext")
 
 

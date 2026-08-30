@@ -1,0 +1,41 @@
+name: Installer smoke tests
+
+on:
+  pull_request:
+    paths: ["install.sh", "install.ps1", "local_codex/releases.py", ".github/workflows/installer-smoke.yml"]
+  push:
+    branches: [main]
+    paths: ["install.sh", "install.ps1", "local_codex/releases.py", ".github/workflows/installer-smoke.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: bash -n install.sh
+      - run: ./install.sh --dry-run --version "$(cat VERSION)" --yes
+      - name: Isolated payload installation
+        env:
+          LOCAL_CODEX_INSTALL_ROOT: ${{ runner.temp }}/localcodex
+          LOCAL_CODEX_HOME: ${{ runner.temp }}/localcodex/data
+          LOCAL_CODEX_BIN_DIR: ${{ runner.temp }}/bin
+        run: |
+          ./install.sh --version "$(cat VERSION)" --yes --skip-setup --skip-models --skip-search
+          test -L "$LOCAL_CODEX_INSTALL_ROOT/current"
+          test -x "$LOCAL_CODEX_INSTALL_ROOT/current/.venv/bin/python"
+          cd "$LOCAL_CODEX_INSTALL_ROOT/current"
+          .venv/bin/python -m unittest tests.test_usage -v
+
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Parse and dry-run PowerShell installer
+        shell: pwsh
+        run: |
+          [scriptblock]::Create((Get-Content -Raw ./install.ps1)) | Out-Null
+          ./install.ps1 -DryRun -Version (Get-Content ./VERSION -Raw).Trim()

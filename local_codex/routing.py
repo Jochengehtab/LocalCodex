@@ -4,6 +4,7 @@ import json
 import re
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -112,12 +113,16 @@ class TurnRouter:
 
     def choose(self, body: Mapping[str, Any], headers: Mapping[str, str]) -> RouteDecision:
         metadata = turn_metadata(headers, body)
-        session_id = str(
+        session_value = (
             metadata.get("session_id")
             or headers.get("session-id")
             or body.get("prompt_cache_key")
-            or "unknown-session"
         )
+        if not session_value:
+            # Older Codex builds do not always send thread metadata. Never
+            # merge every such invocation into one "unknown-session" bucket.
+            session_value = headers.get("x-client-request-id") or f"local-{uuid.uuid4()}"
+        session_id = str(session_value)
         turn_id = str(metadata.get("turn_id") or headers.get("x-client-request-id") or session_id)
         current_input = body.get("input", [])
         request_text = latest_user_text(current_input)

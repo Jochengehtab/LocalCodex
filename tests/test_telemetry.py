@@ -5,7 +5,7 @@ from local_codex.usage import TokenUsage
 
 
 class TelemetryTests(unittest.TestCase):
-    def test_stream_only_keeps_reasoning_summary_and_estimates_output(self):
+    def test_stream_ignores_all_reasoning_and_estimates_visible_output(self):
         hub = TelemetryHub()
         hub.start(model="local-codex-build:latest", session_id="s", turn_id="t")
         parser = TelemetrySSEParser(hub)
@@ -18,11 +18,10 @@ class TelemetryTests(unittest.TestCase):
             b'data: {"type":"response.output_text.delta","delta":"Hallo Welt"}\n\n'
         )
         snapshot = hub.snapshot()
-        self.assertIn("Pruefe Tests", snapshot["thinking_summary"])
-        self.assertNotIn("private raw thought", snapshot["thinking_summary"])
+        self.assertNotIn("thinking_summary", snapshot)
         self.assertEqual("generating", snapshot["phase"])
         self.assertGreater(snapshot["estimated_output_tokens"], 0)
-        self.assertGreater(snapshot["estimated_reasoning_tokens"], 0)
+        self.assertNotIn("estimated_reasoning_tokens", snapshot)
         self.assertTrue(snapshot["tokens_per_second_estimated"])
 
     def test_final_usage_replaces_estimates(self):
@@ -57,9 +56,21 @@ class TelemetryTests(unittest.TestCase):
         hub = TelemetryHub()
         hub.start(model="m", session_id="s", turn_id="t")
         hub.output_delta("visible answer")
+        before = hub.snapshot()["estimated_output_tokens"]
         parser = TelemetrySSEParser(None)
         parser.feed(b'data: {"type":"response.output_text.delta","delta":"hidden title"}\n\n')
-        self.assertNotIn("hidden title", hub.snapshot()["thinking_summary"])
+        self.assertEqual(before, hub.snapshot()["estimated_output_tokens"])
+
+    def test_snapshot_includes_session_aggregate_with_live_overlay(self):
+        hub = TelemetryHub()
+        hub.start(
+            model="m", session_id="s", turn_id="t",
+            session_statistics={"input_tokens": 20, "output_tokens": 10},
+        )
+        hub.output_delta("12345678")
+        snapshot = hub.snapshot()
+        self.assertEqual(20, snapshot["session"]["input_tokens"])
+        self.assertGreater(snapshot["session"]["live_output_tokens"], 10)
 
 
 if __name__ == "__main__":

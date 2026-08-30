@@ -149,6 +149,8 @@ def normalize_response(response: dict[str, Any], offered: set[str]) -> dict[str,
     result = copy.deepcopy(response)
     output: list[dict[str, Any]] = []
     for item in result.get("output", []):
+        if isinstance(item, dict) and item.get("type") == "reasoning":
+            continue
         if isinstance(item, dict) and item.get("type") == "function_call":
             output.append(normalize_function_call(item, offered))
         else:
@@ -217,6 +219,15 @@ def transform_sse(payload: str, offered: set[str]) -> tuple[bytes, dict[str, Any
         except json.JSONDecodeError:
             prefix = f"event: {event.event}\n" if event.event else ""
             rendered.append(f"{prefix}data: {event.data}\n\n")
+            continue
+
+        event_type = str(data.get("type") or event.event or "").lower()
+        event_item = data.get("item")
+        if "reasoning" in event_type or (
+            isinstance(event_item, dict) and event_item.get("type") == "reasoning"
+        ):
+            # LocalCodex does not expose, store or feed reasoning summaries
+            # back into Codex. Exact output usage remains in response.completed.
             continue
 
         item = data.get("item")

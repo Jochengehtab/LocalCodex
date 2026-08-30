@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 import uuid
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
 import httpx
 
@@ -22,11 +22,10 @@ from local_codex.diagnostics import (
     validate_local_arguments,
 )
 from local_codex.paths import map_cli_paths
-from local_codex.settings import SETTINGS
+from local_codex.settings import LOCAL_HOME, SETTINGS
 
 
 ROOT = Path(__file__).resolve().parent
-LOCAL_HOME = ROOT / ".codex-local"
 PYTHON = ROOT / ".venv" / "bin" / "python"
 HEALTH_URL = "http://127.0.0.1:18081/health"
 ROUTER_URL = "http://127.0.0.1:18081"
@@ -34,7 +33,6 @@ SEARCH_URL = "http://127.0.0.1:18082"
 SEARCH_COMPOSE = ROOT / "local_search" / "docker-compose.yml"
 SEARCH_ENV = LOCAL_HOME / "search.env"
 ROUTER_LOG = LOCAL_HOME / "state" / "router.log"
-MONITOR_SHUTDOWN_EVENT = r"Local\LocalCodexMonitorShutdown"
 
 
 def local_environment() -> dict[str, str]:
@@ -122,9 +120,9 @@ def start_monitor(enabled: bool) -> subprocess.Popen[str] | None:
     if not enabled:
         return None
     runtime = _monitor_runtime()
-    executable = runtime.get("wsl_executable")
+    executable = runtime.get("wsl_executable") or runtime.get("executable")
     if not isinstance(executable, str) or not Path(executable).exists():
-        print("Hinweis: Windows-Monitor ist nicht installiert; `codex-local --setup` repariert ihn.")
+        print("Hinweis: Nativer Monitor ist nicht installiert; `codex-local setup --build-monitor` repariert ihn.")
         return None
     try:
         process = subprocess.Popen(
@@ -175,47 +173,6 @@ def release_lease(lease_id: str | None) -> None:
         )
     except httpx.HTTPError:
         pass
-
-
-def active_launcher_count() -> int | None:
-    """Return the current shared-router lease count, or None if unavailable."""
-    try:
-        response = httpx.get(f"{ROUTER_URL}/monitor/snapshot", timeout=2.0)
-        response.raise_for_status()
-        value = response.json().get("sessions", {}).get("active_count")
-        return int(value) if isinstance(value, (int, float)) else None
-    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
-        return None
-
-
-def request_monitor_shutdown() -> bool:
-    """Wake the native monitor so it can close without waiting for polling."""
-    powershell = shutil.which("powershell.exe")
-    if not powershell:
-        return False
-    script = (
-        "$e=[Threading.EventWaitHandle]::OpenExisting('"
-        + MONITOR_SHUTDOWN_EVENT
-        + "'); $e.Set() | Out-Null"
-    )
-    try:
-        completed = subprocess.run(
-            [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=3,
-            check=False,
-        )
-        return completed.returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-def stop_monitor_when_idle() -> None:
-    """Close the shared tray monitor only after the last Codex lease is gone."""
-    if active_launcher_count() == 0:
-        request_monitor_shutdown()
 
 
 def search_ready() -> bool:
@@ -307,34 +264,22 @@ def monitor_doctor() -> int:
     proxy = start_router()
     lease_id = register_lease()
     runtime = _monitor_runtime()
-    executable = runtime.get("wsl_executable")
-    diagnostic_windows = runtime.get("windows_ready_file")
-    diagnostic_wsl = runtime.get("wsl_ready_file")
-    if isinstance(diagnostic_windows, str):
-        diagnostic_windows = str(PureWindowsPath(diagnostic_windows).with_name("monitor.diagnostic.json"))
-    if isinstance(diagnostic_wsl, str):
-        diagnostic_wsl = str(Path(diagnostic_wsl).with_name("monitor.diagnostic.json"))
+    executable = runtime.get("wsl_executable") or runtime.get("executable")
     checks: list[tuple[str, bool, str]] = []
-    checks.append(("WPF-EXE", isinstance(executable, str) and Path(executable).exists(), str(executable or "nicht installiert")))
+    checks.append(("Dear-ImGui-Monitor", isinstance(executable, str) and Path(executable).exists(), str(executable or "nicht installiert")))
     checks.append(("Router", router_ready(), HEALTH_URL))
-    process = None
-    if checks[0][1] and isinstance(diagnostic_windows, str):
-        try:
-            process = subprocess.run(
-                [executable, "--router-url", "http://127.0.0.1:18081", "--diagnostic-file", diagnostic_windows],
-                cwd=ROOT, timeout=15, check=False,
-            )
-            detail = "Diagnose erfolgreich" if process.returncode == 0 else f"Exit {process.returncode}"
-            checks.append(("Windows→WSL", process.returncode == 0, detail))
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            checks.append(("Windows→WSL", False, str(exc)))
-    else:
-        checks.append(("Windows→WSL", False, "Monitor-EXE oder Diagnosepfad fehlt"))
-    if isinstance(diagnostic_wsl, str) and Path(diagnostic_wsl).exists():
-        print(Path(diagnostic_wsl).read_text(encoding="utf-8"))
+    process = start_monitor(checks[0][1])
+    time.sleep(1.0)
+    launched = process is not None and process.poll() in (None, 0)
+    checks.append(("Native UI", launched, "gestartet/Singleton aktiv" if launched else "Start fehlgeschlagen"))
     for name, ok, detail in checks:
         print(f"[{'OK' if ok else 'FEHLER'}] {name}: {detail}")
     release_lease(lease_id)
+    if process is not None and process.poll() is None:
+        try:
+            process.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            process.terminate()
     if proxy is not None:
         proxy.terminate()
         try:
@@ -378,24 +323,6 @@ def _contains_text(value, expected: str) -> bool:
     return False
 
 
-def _ready_timestamp() -> int | None:
-    ready = _monitor_runtime().get("wsl_ready_file")
-    try:
-        return Path(ready).stat().st_mtime_ns if isinstance(ready, str) else None
-    except OSError:
-        return None
-
-
-def _wait_for_monitor_ready(previous: int | None, timeout: float = 10.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        current = _ready_timestamp()
-        if current is not None and (previous is None or current > previous):
-            return True
-        time.sleep(0.25)
-    return False
-
-
 def local_self_test(json_output: bool = False) -> int:
     ensure_setup()
     report = DiagnosticReport()
@@ -403,8 +330,8 @@ def local_self_test(json_output: bool = False) -> int:
     lease_id = None
     heartbeat_stop = threading.Event()
     heartbeat = None
-    monitor_previous = _ready_timestamp()
     monitor_started = False
+    monitor_process = None
     try:
         try:
             proxy = start_router()
@@ -419,12 +346,13 @@ def local_self_test(json_output: bool = False) -> int:
 
         report.extend(local_preflight().checks)
         if report.ok:
-            start_monitor(True)
-            monitor_started = _wait_for_monitor_ready(monitor_previous)
+            monitor_process = start_monitor(True)
+            time.sleep(1.0)
+            monitor_started = monitor_process is not None and monitor_process.poll() in (None, 0)
             report.add(
                 "Windows-Monitor",
                 monitor_started,
-                "Ready-Heartbeat empfangen" if monitor_started else "kein Ready-Heartbeat",
+                "Native UI gestartet/Singleton aktiv" if monitor_started else "Monitorstart fehlgeschlagen",
                 required=False,
             )
 
@@ -518,14 +446,15 @@ def local_self_test(json_output: bool = False) -> int:
         else:
             report.add("Router-Shutdown", True, "geteilte Router-Instanz bleibt aktiv", required=False)
 
-        if monitor_started and proxy is not None:
-            deadline = time.monotonic() + 40
-            while _ready_timestamp() is not None and time.monotonic() < deadline:
-                time.sleep(0.5)
+        if monitor_started and proxy is not None and monitor_process is not None:
+            try:
+                monitor_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                monitor_process.terminate()
             report.add(
                 "Monitor-Shutdown",
-                _ready_timestamp() is None,
-                "beendet" if _ready_timestamp() is None else "Ready-Datei blieb aktiv",
+                monitor_process.poll() is not None,
+                "beendet" if monitor_process.poll() is not None else "musste beendet werden",
                 required=False,
             )
 
@@ -543,7 +472,11 @@ def setup_context_arguments(arguments: list[str]) -> list[str]:
     return []
 
 
-def ensure_setup(benchmark: bool = False, context_arguments: list[str] | None = None) -> None:
+def ensure_setup(
+    benchmark: bool = False,
+    context_arguments: list[str] | None = None,
+    build_monitor: bool = False,
+) -> None:
     config_version = 0
     monitor_missing = True
     try:
@@ -556,14 +489,16 @@ def ensure_setup(benchmark: bool = False, context_arguments: list[str] | None = 
         monitor_missing = not isinstance(monitor_executable, str) or not Path(monitor_executable).exists()
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    if context_arguments or benchmark or not (LOCAL_HOME / "config.toml").exists():
+    if context_arguments or benchmark or build_monitor or not (LOCAL_HOME / "config.toml").exists():
         command = [str(PYTHON), "-m", "local_codex.setup"]
         if benchmark:
             command.append("--benchmark")
         if context_arguments:
             command.extend(context_arguments)
+        if build_monitor:
+            command.append("--build-monitor")
         subprocess.run(command, cwd=ROOT, check=True)
-    elif config_version < 9 or monitor_missing:
+    elif config_version < 10 or monitor_missing:
         subprocess.run(
             [str(PYTHON), "-m", "local_codex.setup", "--refresh-config"],
             cwd=ROOT,
@@ -575,10 +510,24 @@ def main() -> int:
     arguments = map_cli_paths(sys.argv[1:])
     monitor_enabled = "--no-monitor" not in arguments
     arguments = [argument for argument in arguments if argument != "--no-monitor"]
+    if arguments and arguments[0] == "update":
+        from local_codex.releases import perform_update
+
+        version = arguments[1] if len(arguments) > 1 else None
+        return perform_update(version)
+    if arguments and arguments[0] == "rollback":
+        from local_codex.releases import rollback
+
+        return rollback()
+    if arguments and arguments[0] == "uninstall":
+        from local_codex.releases import uninstall
+
+        return uninstall(purge_data="--purge-data" in arguments[1:])
     if arguments and arguments[0] in {"--setup", "setup"}:
         ensure_setup(
             benchmark="--benchmark" in arguments[1:],
             context_arguments=setup_context_arguments(arguments[1:]),
+            build_monitor="--build-monitor" in arguments[1:],
         )
         start_search()
         return 0
@@ -613,6 +562,10 @@ def main() -> int:
         print(f"[local-codex] Abbruch: {exc}", file=sys.stderr)
         return 2
 
+    from local_codex.releases import maybe_prompt_for_update
+
+    if maybe_prompt_for_update():
+        return 0
     ensure_setup()
     proxy = None
     router_error = None
@@ -667,7 +620,6 @@ def main() -> int:
         if heartbeat is not None:
             heartbeat.join(timeout=2)
         release_lease(lease_id)
-        stop_monitor_when_idle()
         # Managed routers normally stop themselves after the last lease. If
         # registration failed, retain the old ownership cleanup as a fallback.
         if proxy is not None and lease_id is None:

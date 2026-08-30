@@ -104,6 +104,7 @@ class Runtime:
         self.telemetry = TelemetryHub()
         self.leases = LeaseRegistry(ttl_seconds=15.0)
         self.monitor_task: asyncio.Task[None] | None = None
+        self.shutdown_task: asyncio.Task[None] | None = None
         self.ollama_version: str | None = None
         self.managed = os.environ.get("LOCAL_CODEX_MANAGED") == "1"
         self._shutdown_requested = False
@@ -121,20 +122,19 @@ class Runtime:
                 self.settings.build_model,
                 self.settings.vision_model,
             }
-            loaded = [
-                item.get("name")
-                for item in ps_payload.get("models", [])
-                if item.get("name") in local_aliases
-            ]
-            if len(loaded) == 1:
-                self.current_model = loaded[0]
-            elif len(loaded) > 1:
-                for model in loaded:
-                    await self.client.post(
-                        f"{self.settings.ollama_base_url}/api/generate",
-                        json={"model": model, "keep_alive": 0},
-                        timeout=15.0,
+            loaded = [item.get("name") for item in ps_payload.get("models", [])
+                      if item.get("name") in local_aliases]
+            if loaded:
+                LOGGER.info("Cleaning up stale LocalCodex model(s): %s", ", ".join(loaded))
+                await self.unload_local_models(require_idle=False)
+                try:
+                    refreshed = await self.client.get(
+                        f"{self.settings.ollama_base_url}/api/ps", timeout=5.0
                     )
+                    refreshed.raise_for_status()
+                    ps_payload = refreshed.json()
+                except (httpx.HTTPError, ValueError):
+                    ps_payload = {"models": []}
             try:
                 version_response = await self.client.get(
                     f"{self.settings.ollama_base_url}/api/version", timeout=3.0
@@ -166,10 +166,10 @@ class Runtime:
                     and float(lease_state["empty_seconds"]) >= 20.0
                     and not self._shutdown_requested
                 ):
-                    self._shutdown_requested = True
-                    LOGGER.info("No active Codex launcher leases; stopping managed router")
-                    os.kill(os.getpid(), signal.SIGTERM)
-                    return
+                    if not self.shutdown_task or self.shutdown_task.done():
+                        self.shutdown_task = asyncio.create_task(self.shutdown_if_idle())
+                    await asyncio.sleep(1.0)
+                    continue
                 await asyncio.sleep(2.0 if self.telemetry.snapshot()["active"] else 10.0)
             except asyncio.CancelledError:
                 return
@@ -181,10 +181,73 @@ class Runtime:
         if self.monitor_task:
             self.monitor_task.cancel()
             await asyncio.gather(self.monitor_task, return_exceptions=True)
+        if self.shutdown_task and self.shutdown_task is not asyncio.current_task():
+            self.shutdown_task.cancel()
+            await asyncio.gather(self.shutdown_task, return_exceptions=True)
+        await self.unload_local_models(require_idle=False)
         if self.client:
             await self.client.aclose()
         self.search.close()
         self.usage.close()
+
+    @property
+    def local_aliases(self) -> tuple[str, str, str]:
+        return (
+            self.settings.plan_model,
+            self.settings.build_model,
+            self.settings.vision_model,
+        )
+
+    async def unload_local_models(self, *, require_idle: bool = True) -> bool:
+        """Unload only LocalCodex aliases and verify the Ollama process list."""
+        if not self.client:
+            return False
+        async with self.inference_lock:
+            if require_idle and self.leases.snapshot()["active_count"] != 0:
+                return False
+            remaining: set[str] = set(self.local_aliases)
+            for attempt in range(3):
+                try:
+                    ps = await self.client.get(
+                        f"{self.settings.ollama_base_url}/api/ps", timeout=5.0
+                    )
+                    ps.raise_for_status()
+                    remaining = {
+                        str(item.get("name"))
+                        for item in ps.json().get("models", [])
+                        if isinstance(item, dict) and item.get("name") in self.local_aliases
+                    }
+                except (httpx.HTTPError, ValueError):
+                    remaining = set(self.local_aliases) if attempt == 0 else remaining
+                if not remaining:
+                    self.current_model = None
+                    return True
+                for model in sorted(remaining):
+                    try:
+                        response = await self.client.post(
+                            f"{self.settings.ollama_base_url}/api/generate",
+                            json={"model": model, "keep_alive": 0},
+                            timeout=15.0,
+                        )
+                        response.raise_for_status()
+                    except httpx.HTTPError as exc:
+                        LOGGER.warning("Could not unload %s (attempt %d): %s", model, attempt + 1, exc)
+                await asyncio.sleep(0.25)
+            LOGGER.warning("LocalCodex model(s) still reported by Ollama: %s", ", ".join(sorted(remaining)))
+            return False
+
+    async def shutdown_if_idle(self) -> None:
+        """Recheck shared leases, unload aliases, then stop a managed router."""
+        await asyncio.sleep(0.2)
+        if self.leases.snapshot()["active_count"] != 0:
+            return
+        await self.unload_local_models(require_idle=True)
+        if self.leases.snapshot()["active_count"] != 0:
+            return
+        if self.managed and not self._shutdown_requested:
+            self._shutdown_requested = True
+            LOGGER.info("No active Codex launcher leases; LocalCodex models unloaded; stopping router")
+            os.kill(os.getpid(), signal.SIGTERM)
 
     async def switch_model(self, target: str) -> None:
         if self.current_model == target:
@@ -268,6 +331,38 @@ async def monitor_history() -> dict[str, Any]:
     return RUNTIME.usage.summary(1)
 
 
+@app.get("/monitor/statistics")
+async def monitor_statistics(
+    period: str = "30d",
+    session_id: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> Any:
+    try:
+        return RUNTIME.usage.statistics(
+            period=period, session_id=session_id, page=page, page_size=page_size
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.get("/monitor/statistics/export")
+async def monitor_statistics_export(
+    period: str = "30d", session_id: str | None = None, format: str = "json"
+) -> Response:
+    try:
+        payload = RUNTIME.usage.export(period=period, session_id=session_id, format=format)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    media_type = "text/csv" if format == "csv" else "application/json"
+    filename = f"localcodex-usage-{period}.{format}"
+    return Response(
+        payload,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.post("/monitor/leases/{lease_id}")
 async def register_monitor_lease(lease_id: str, request: Request) -> dict[str, Any]:
     try:
@@ -276,6 +371,9 @@ async def register_monitor_lease(lease_id: str, request: Request) -> dict[str, A
         body = {}
     process_id = body.get("process_id", 0) if isinstance(body, dict) else 0
     lease = RUNTIME.leases.register(lease_id, int(process_id or 0))
+    if RUNTIME.shutdown_task and not RUNTIME.shutdown_task.done():
+        RUNTIME.shutdown_task.cancel()
+    RUNTIME._shutdown_requested = False
     return {"ok": True, "lease_id": lease.lease_id, **RUNTIME.leases.snapshot()}
 
 
@@ -289,7 +387,13 @@ async def heartbeat_monitor_lease(lease_id: str) -> JSONResponse:
 
 @app.delete("/monitor/leases/{lease_id}")
 async def release_monitor_lease(lease_id: str) -> dict[str, Any]:
-    return {"ok": RUNTIME.leases.release(lease_id), **RUNTIME.leases.snapshot()}
+    released = RUNTIME.leases.release(lease_id)
+    snapshot = RUNTIME.leases.snapshot()
+    if snapshot["active_count"] == 0 and (
+        not RUNTIME.shutdown_task or RUNTIME.shutdown_task.done()
+    ):
+        RUNTIME.shutdown_task = asyncio.create_task(RUNTIME.shutdown_if_idle())
+    return {"ok": released, **snapshot}
 
 
 def _prepare_body(body: dict[str, Any], headers: dict[str, str], decision) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -308,9 +412,7 @@ def _prepare_body(body: dict[str, Any], headers: dict[str, str], decision) -> tu
     if not isinstance(reasoning, dict):
         reasoning = {}
     reasoning["effort"] = "xhigh"
-    # Qwen/Ollama may ignore this field, but Responses-compatible servers can
-    # use it to emit short summary deltas. Never request raw reasoning text.
-    reasoning.setdefault("summary", "auto")
+    reasoning.pop("summary", None)
     prepared["reasoning"] = reasoning
     prepared.pop("client_metadata", None)
     prepared.pop("prompt_cache_key", None)
@@ -455,6 +557,17 @@ def _is_codex_title_request(full_input: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _response_text(response: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for item in response.get("output", []):
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for content in item.get("content", []):
+            if isinstance(content, dict) and isinstance(content.get("text"), str):
+                parts.append(content["text"])
+    return " ".join(parts).strip()
+
+
 @app.post("/v1/responses")
 async def responses(request: Request) -> Response:
     try:
@@ -485,7 +598,12 @@ async def responses(request: Request) -> Response:
     async with RUNTIME.inference_lock:
         if display_turn:
             RUNTIME.telemetry.start(
-                model=decision.model, session_id=decision.session_id, turn_id=decision.turn_id
+                model=decision.model,
+                session_id=decision.session_id,
+                turn_id=decision.turn_id,
+                session_statistics=RUNTIME.usage.statistics(
+                    period="all", session_id=decision.session_id, page_size=1
+                ),
             )
         try:
             await RUNTIME.switch_model(decision.model)
@@ -516,6 +634,14 @@ async def responses(request: Request) -> Response:
             model=decision.model, usage=usage,
             comparison_model=comparison_model,
             metadata={"request_kind": "title" if not display_turn else "chat"},
+        )
+        if not display_turn:
+            title = _response_text(resolved)
+            if title:
+                RUNTIME.usage.set_session_title(decision.session_id, title)
+        RUNTIME.telemetry.update_session_statistics(
+            decision.session_id,
+            RUNTIME.usage.statistics(period="all", session_id=decision.session_id, page_size=1),
         )
         if display_turn:
             RUNTIME.telemetry.complete(

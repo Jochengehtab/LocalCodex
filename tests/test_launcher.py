@@ -36,16 +36,5 @@ class LauncherTests(unittest.TestCase):
         self.assertIs(started, process)
         self.assertIs(popen.call_args.kwargs["stdin"], start_codex.subprocess.DEVNULL)
 
-    @patch("start_codex.shutil.which", return_value="powershell.exe")
-    @patch("start_codex.subprocess.run")
-    def test_monitor_shutdown_signal_uses_named_windows_event(self, run, _which):
-        run.return_value.returncode = 0
-        self.assertTrue(start_codex.request_monitor_shutdown())
-        command = run.call_args.args[0]
-        self.assertEqual("powershell.exe", command[0])
-        self.assertIn("Local\\LocalCodexMonitorShutdown", command[-1])
-        self.assertIs(run.call_args.kwargs["stdin"], start_codex.subprocess.DEVNULL)
-
-
 if __name__ == "__main__":
     unittest.main()
