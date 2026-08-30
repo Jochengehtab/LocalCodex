@@ -1,0 +1,21 @@
+services:
+  searxng:
+    image: searxng/searxng:2026.8.29-d226b78bc@sha256:61ad36fcf71eb300f7d64216a6a04e010754755c7f5d33a526bd52e597e78c69
+    container_name: local-codex-searxng
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18082:8080"
+    environment:
+      SEARXNG_BASE_URL: http://127.0.0.1:18082/
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-local-codex-loopback-only}
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-cache:/var/cache/searxng
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  searxng-cache:
+

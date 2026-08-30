@@ -1,0 +1,24 @@
+# Local Python/runtime artifacts
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Generated local Codex state and secrets (recreated by setup)
+.codex-local/
+.codex-local/state/
+.codex-local/*.sqlite*
+.codex-local/*_*.sqlite*
+.codex-local/logs/
+.codex-local/sessions/
+.codex-local/shell_snapshots/
+.codex-local/tmp/
+.codex-local/*.jsonl
+
+# Local test/cache artifacts
+cache/
+*.wav
+
+# Windows build output
+windows/LocalCodexMonitor/bin/
+windows/LocalCodexMonitor/obj/
