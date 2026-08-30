@@ -21,8 +21,8 @@ nativen Dear-ImGui-Monitor.
 - Automatisches Entladen ausschließlich der LocalCodex-Ollama-Aliase nach der letzten Sitzung.
 - SemVer-Releases, SHA-256-Prüfung, atomare Updates und Rollback.
 - Vollständige Deutsch-/Englisch-Lokalisierung per `LOCAL_CODEX_LANGUAGE=de|en` oder im
-  Monitor unter Einstellungen → Sprache. Unbekannte Locale-Werte fallen sicher auf Deutsch
-  zurück.
+  Monitor unter Einstellungen → Sprache. Englisch ist standardmäßig aktiv; unbekannte Werte
+  fallen sicher auf Englisch zurück.
 
 ## Installation
 

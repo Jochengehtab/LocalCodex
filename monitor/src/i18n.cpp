@@ -8,8 +8,7 @@ namespace localcodex::i18n {
 namespace {
 std::string current = [] {
     const char* requested = std::getenv("LOCAL_CODEX_LANGUAGE");
-    if (!requested) requested = std::getenv("LANG");
-    return requested && std::string_view(requested).starts_with("en") ? "en" : "de";
+    return requested && std::string_view(requested).starts_with("de") ? "de" : "en";
 }();
 
 const std::unordered_map<std::string_view, std::pair<const char*, const char*>> messages{
@@ -59,7 +58,7 @@ const std::unordered_map<std::string_view, std::pair<const char*, const char*>> 
 }  // namespace
 
 void set_language(const std::string& value) {
-    current = value.rfind("en", 0) == 0 ? "en" : "de";
+    current = value.rfind("de", 0) == 0 ? "de" : "en";
 }
 
 const std::string& language() { return current; }

@@ -20,7 +20,7 @@ generated directories (`build/`, `out/`, `dist/`, `.codex-local/`, or `.venv/`).
 
 User-facing text must use the localization layer whenever practical. Python code should use
 `local_codex.i18n.tr()`; native monitor text belongs in `monitor/src/i18n.cpp`. Support `de` and
-`en`, keep German as the safe fallback, and document new keys. Do not store reasoning summaries.
+`en`, keep English as the safe fallback/default, and document new keys. Do not store reasoning summaries.
 
 ## Safety and privacy
 

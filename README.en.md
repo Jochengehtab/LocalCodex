@@ -19,7 +19,8 @@ session and historical usage statistics through a native Dear ImGui monitor.
 - Native Windows x64 and Linux x64 monitor built with SDL3, Dear ImGui, and ImPlot.
 - Only LocalCodex Ollama aliases are unloaded after the final session; unrelated models stay loaded.
 - SemVer releases, SHA-256 verification, atomic updates, rollback, and uninstall.
-- German and English localization via `LOCAL_CODEX_LANGUAGE=de|en` or Monitor → Settings → Language.
+- German and English localization via `LOCAL_CODEX_LANGUAGE=de|en` or Monitor → Settings → Language;
+  English is the default.
 
 ## Installation
 

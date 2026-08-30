@@ -1,8 +1,7 @@
 """Small, dependency-free localization layer shared by the Python entry points.
 
-The language can be selected with ``LOCAL_CODEX_LANGUAGE=de|en``.  Locale
-environment variables are used as a fallback, while German remains the
-default to preserve the existing CLI behaviour.
+The language can be selected with ``LOCAL_CODEX_LANGUAGE=de|en``. English is
+the deterministic default regardless of the host operating system locale.
 """
 from __future__ import annotations
 
@@ -54,9 +53,8 @@ _MESSAGES: Final[dict[str, dict[str, str]]] = {
 def _detect_language() -> str:
     requested = os.environ.get("LOCAL_CODEX_LANGUAGE", "").strip().lower().replace("_", "-")
     if requested:
-        return "en" if requested.startswith("en") else "de"
-    locale = os.environ.get("LC_ALL") or os.environ.get("LANG") or "de"
-    return "en" if locale.lower().startswith("en") else "de"
+        return "de" if requested.startswith("de") else "en"
+    return "en"
 
 
 _language = _detect_language()
@@ -67,12 +65,12 @@ def get_language() -> str:
 
 
 def set_language(value: str) -> str:
-    """Set and return a supported language; unknown values fall back to German."""
+    """Set and return a supported language; unknown values fall back to English."""
     global _language
-    _language = "en" if value.lower().startswith("en") else "de"
+    _language = "de" if value.lower().startswith("de") else "en"
     return _language
 
 
 def tr(key: str, **values: object) -> str:
-    message = _MESSAGES.get(_language, {}).get(key) or _MESSAGES["de"].get(key) or key
+    message = _MESSAGES.get(_language, {}).get(key) or _MESSAGES["en"].get(key) or key
     return message.format(**values)

@@ -97,8 +97,9 @@ JavaScript-only-Seiten werden in der ersten Version nicht extrahiert.
 ## Sprache
 
 CLI- und Monitortexte unterstützen Deutsch und Englisch. Setze vor dem Start
-`LOCAL_CODEX_LANGUAGE=de` oder `LOCAL_CODEX_LANGUAGE=en`; im nativen Monitor kann die Sprache
-zusätzlich unter **Einstellungen → Sprache** geändert werden. Die Auswahl wird lokal gespeichert.
+`LOCAL_CODEX_LANGUAGE=de` oder `LOCAL_CODEX_LANGUAGE=en`; standardmäßig ist Englisch aktiv. Im
+nativen Monitor kann die Sprache zusätzlich unter **Einstellungen → Sprache** geändert werden.
+Die Auswahl wird lokal gespeichert.
 
 ## Modellrouting
 
