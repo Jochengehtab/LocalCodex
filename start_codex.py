@@ -498,7 +498,7 @@ def ensure_setup(
         if build_monitor:
             command.append("--build-monitor")
         subprocess.run(command, cwd=ROOT, check=True)
-    elif config_version < 10 or monitor_missing:
+    elif config_version < 11 or monitor_missing:
         subprocess.run(
             [str(PYTHON), "-m", "local_codex.setup", "--refresh-config"],
             cwd=ROOT,
@@ -523,6 +523,11 @@ def main() -> int:
         from local_codex.releases import uninstall
 
         return uninstall(purge_data="--purge-data" in arguments[1:])
+    if arguments and arguments[0] == "benchmark":
+        return subprocess.run(
+            [str(PYTHON), "-m", "local_codex.setup", "--benchmark", *arguments[1:]],
+            cwd=ROOT, check=False,
+        ).returncode
     if arguments and arguments[0] in {"--setup", "setup"}:
         ensure_setup(
             benchmark="--benchmark" in arguments[1:],

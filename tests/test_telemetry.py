@@ -65,12 +65,34 @@ class TelemetryTests(unittest.TestCase):
         hub = TelemetryHub()
         hub.start(
             model="m", session_id="s", turn_id="t",
-            session_statistics={"input_tokens": 20, "output_tokens": 10},
+            session_statistics={"input_tokens": 20, "output_tokens": 10, "estimated_saved_usd": 0.1},
+            input_tokens_estimate=8,
+            comparison_model="gpt-5.6-luna",
         )
         hub.output_delta("12345678")
         snapshot = hub.snapshot()
         self.assertEqual(20, snapshot["session"]["input_tokens"])
+        self.assertEqual(28, snapshot["session"]["live_input_tokens"])
         self.assertGreater(snapshot["session"]["live_output_tokens"], 10)
+        self.assertGreater(snapshot["session"]["live_saved_usd"], 0.1)
+
+    def test_schema_four_includes_revision_total_and_context(self):
+        hub = TelemetryHub()
+        initial_revision = hub.revision
+        hub.update_all_statistics({"input_tokens": 100, "output_tokens": 40, "estimated_saved_usd": 1.5})
+        hub.start(
+            model="local-codex-plan:latest", session_id="s", turn_id="t",
+            input_tokens_estimate=12,
+        )
+        hub.update_ollama_runtime({"models": [{"name": "local-codex-plan:latest", "context_length": 8192}]})
+        hub.output_delta("12345678")
+        snapshot = hub.snapshot()
+        self.assertEqual(4, snapshot["schema_version"])
+        self.assertGreater(snapshot["sequence"], initial_revision)
+        self.assertEqual("plan", snapshot["turn"]["role"])
+        self.assertEqual(8192, snapshot["context"]["capacity_tokens"])
+        self.assertEqual(112, snapshot["total"]["live_input_tokens"])
+        self.assertGreater(snapshot["total"]["live_output_tokens"], 40)
 
 
 if __name__ == "__main__":

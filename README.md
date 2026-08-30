@@ -1,65 +1,54 @@
 # LocalCodex
 
-**English:** [README.en.md](README.en.md) · **Deutsch:** Diese Seite
+**English:** This page · **Deutsch:** [README.de.md](README.de.md)
 
-LocalCodex verbindet die echte OpenAI Codex CLI vollständig lokal mit Ollama. Ein lokaler
-Responses-Router wählt automatisch zwischen Qwen-Planungs-, Coding- und Vision-Modellen, stellt
-eine private SearXNG-Websuche bereit und liefert exakte Sitzungs- und Langzeitstatistiken an einen
-nativen Dear-ImGui-Monitor.
+LocalCodex connects the real OpenAI Codex CLI to Ollama locally. A local Responses router selects
+Qwen planning, coding, and vision models, provides private SearXNG web search, and exposes exact
+session and historical usage statistics through a native Dear ImGui monitor.
 
-> Die Bedienung entspricht dem Codex-Workflow, die Modellqualität ist jedoch von den lokal
-> installierten Qwen-Modellen und der verfügbaren Hardware abhängig.
+> The workflow follows Codex, but model quality depends on the installed local Qwen models and
+> available hardware.
 
-## Funktionen
+## Features
 
-- Lokaler Codex-Provider auf `127.0.0.1`; Cloud-Modell-Overrides werden blockiert.
-- Automatisches Routing zwischen `qwen3.8:27b`, `qwen3.6:35b-a3b` und `qwen3-vl:30b`.
-- Maximaler `xhigh`-Reasoning-Level, ohne Rohgedanken oder Denkzusammenfassungen zu speichern.
-- Kostenlose aktuelle Websuche über einen lokalen SearXNG-Container.
-- Exakte Ollama-Usage-Werte pro Codex-Thread sowie 24h-/7d-/30d-/Gesamtstatistiken.
-- Native Windows-x64- und Linux-x64-Oberfläche mit SDL3, Dear ImGui und ImPlot.
-- Automatisches Entladen ausschließlich der LocalCodex-Ollama-Aliase nach der letzten Sitzung.
-- SemVer-Releases, SHA-256-Prüfung, atomare Updates und Rollback.
-- Vollständige Deutsch-/Englisch-Lokalisierung per `LOCAL_CODEX_LANGUAGE=de|en` oder im
-  Monitor unter Einstellungen → Sprache. Englisch ist standardmäßig aktiv; unbekannte Werte
-  fallen sicher auf Englisch zurück.
+- Local-only provider on `127.0.0.1`; cloud model overrides are blocked.
+- Automatic routing between `qwen3.8:27b`, `qwen3.6:35b-a3b`, and `qwen3-vl:30b`.
+- New turns use the maximum `xhigh` reasoning level; raw reasoning summaries are never stored.
+- Free current web search through a local SearXNG container.
+- Exact Ollama usage per Codex thread plus 24h/7d/30d/all-time statistics.
+- Native Windows x64 and Linux x64 monitor built with SDL3, Dear ImGui, and ImPlot.
+- Only LocalCodex Ollama aliases are unloaded after the final session; unrelated models stay loaded.
+- SemVer releases, SHA-256 verification, atomic updates, rollback, and uninstall.
+- German and English localization via `LOCAL_CODEX_LANGUAGE=de|en` or Monitor → Settings → Language;
+  English is the default.
 
 ## Installation
 
 ### Windows 10/11
 
-Das Windows-Setup verwendet WSL2 für Router und Codex und installiert den Monitor als native
-Windows-Anwendung. Fehlende Voraussetzungen und die großen Modell-Downloads werden vor der
-Installation bestätigt.
+The Windows installer uses WSL2 for the router and Codex and installs the monitor as a native
+Windows application. Missing prerequisites and large model downloads are confirmed first.
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/Jochengehtab/LocalCodex/main/install.ps1 -OutFile install-localcodex.ps1
 powershell -ExecutionPolicy Bypass -File .\install-localcodex.ps1
 ```
 
-Wenn WSL erstmals aktiviert werden muss, kann ein Neustart erforderlich sein. Derselbe Befehl
-setzt die idempotente Installation danach fort.
-
 ### Linux x64
 
 ```bash
 curl -fsSLo install-localcodex.sh https://raw.githubusercontent.com/Jochengehtab/LocalCodex/main/install.sh
 bash install-localcodex.sh
-```
-
-Danach sollte `~/.local/bin` im `PATH` liegen:
-
-```bash
 codex-local
 ```
 
-Die Sprache lässt sich ohne Neuinstallation umschalten:
+Switch language without reinstalling:
 
 ```bash
 LOCAL_CODEX_LANGUAGE=en codex-local
 ```
 
-Nützliche Verwaltungsbefehle:
+Useful commands:
 
 ```bash
 codex-local doctor
@@ -71,28 +60,47 @@ codex-local uninstall
 codex-local uninstall --purge-data
 ```
 
-Installierte Releases prüfen beim Start höchstens einmal pro 24 Stunden auf eine neue stabile
-Version. Aktualisiert wird nur nach ausdrücklicher Auswahl. Entwickler-Clones führen keine
-automatische Updateprüfung aus.
+## Monitor and statistics
 
-## Monitor und Statistik
+The monitor reads only local endpoints and never starts a second model request. During a turn,
+input/output tokens, savings, and tokens/s are estimated from the existing request and stream;
+after completion Ollama's exact usage replaces the estimate. History can be filtered by session
+and period and exported as CSV or JSON.
 
-Der Monitor liest ausschließlich lokale Endpunkte und führt keine zweite Modellanfrage aus.
-Live-Ausgabe und Tokens/s werden während eines Turns aus dem vorhandenen Stream geschätzt; nach
-Abschluss ersetzen Ollamas exakte Usage-Werte die Schätzung. Die Historie kann nach Sitzung und
-Zeitraum gefiltert sowie als CSV oder JSON exportiert werden.
+API endpoints:
 
-API-Endpunkte:
+- `GET /monitor/snapshot` — live state, active launchers, and current session.
+- `GET /monitor/events` — coalesced live SSE updates (maximum 4 Hz).
+- `GET /monitor/statistics` — periods, sessions, models, and pagination.
+- `GET /monitor/statistics/export` — CSV/JSON raw data.
 
-- `GET /monitor/snapshot` – Livezustand, aktive Launcher und aktuelle Sitzung.
-- `GET /monitor/statistics` – Zeiträume, Sitzungen, Modelle und Pagination.
-- `GET /monitor/statistics/export` – CSV-/JSON-Rohdaten.
+The dashboard uses a persistent local SSE stream for live updates and falls back to low-frequency
+polling when necessary. It shows turn, session, and all-time tokens and savings, TTFT, throughput,
+context utilization, model role, Ollama RAM/VRAM, phase, and the latest tool. The throughput graph
+automatically scales over the complete session while retaining peaks in a bounded buffer.
 
-Beim Ende der letzten Launcher-Lease entlädt der Router nur
-`local-codex-plan:latest`, `local-codex-build:latest` und
-`local-codex-vision:latest`. Andere Ollama-Modelle bleiben unangetastet.
+## Context benchmark
 
-## Entwicklung
+Run the local benchmark without changing the active aliases:
+
+```bash
+codex-local benchmark
+```
+
+It tests 8K through 128K independently for the planning, build, and vision models, stores a JSON
+report, and asks before applying the recommended stable window for each model. Use `--json` for
+machine-readable output or `--apply` for an explicit non-interactive application.
+
+## Creating a release
+
+Open **Actions → Release → Run workflow**, enter a semantic version without the `v` prefix, and
+select whether it is a prerelease. The workflow commits `VERSION`, runs the complete Linux/Windows
+matrix, creates checksummed and attested artifacts, tags the tested commit, and publishes the
+GitHub release.
+Repository Actions must have `contents: write`; protected branches must allow the GitHub Actions
+bot to create the release version commit.
+
+## Development
 
 ```bash
 python3 -m venv .venv
@@ -104,18 +112,13 @@ cmake --build build/native --parallel
 ctest --test-dir build/native --output-on-failure
 ```
 
-Ein lokaler Setup-Lauf baut den Monitor nur auf ausdrücklichen Wunsch:
+The monitor is built during setup only when explicitly requested:
 
 ```bash
 ./.venv/bin/python start_codex.py setup --build-monitor
 ```
 
-Die CMake-Abhängigkeiten sind auf konkrete Archive und SHA-256-Hashes festgelegt. GitHub Actions
-baut und testet Python und C++ unter Linux und Windows, prüft beide Installer und veröffentlicht
-nur validierte `vX.Y.Z`-Tags als GitHub Release. Release-Assets enthalten keine Modelle.
+See [README.local-codex.md](README.local-codex.md) for the German routing, web search, context
+benchmarking, diagnostics, and architecture details.
 
-Weitere Details zu Routing, Websuche, Kontextbenchmark und Diagnose stehen in
-[README.local-codex.md](README.local-codex.md).
-
-Beitrags- und Agentenregeln stehen in [AGENTS.md](AGENTS.md); die englische Dokumentation ist
-[README.en.md](README.en.md).
+Contribution and agent rules are documented in [AGENTS.md](AGENTS.md).

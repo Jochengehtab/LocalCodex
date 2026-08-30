@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .protocol import (
     filter_input,
@@ -111,6 +111,7 @@ class Runtime:
 
     async def start(self) -> None:
         self.client = httpx.AsyncClient(timeout=self.settings.request_timeout_seconds)
+        self.telemetry.update_all_statistics(self.usage.statistics(period="all", page_size=1))
         try:
             response = await self.client.get(
                 f"{self.settings.ollama_base_url}/api/ps", timeout=5.0
@@ -311,9 +312,7 @@ async def models() -> dict[str, Any]:
     }
 
 
-@app.get("/monitor/snapshot")
-async def monitor_snapshot() -> dict[str, Any]:
-    """Loopback-only live state for the optional Windows tray monitor."""
+def _monitor_payload() -> dict[str, Any]:
     snapshot = RUNTIME.telemetry.snapshot()
     snapshot["sessions"] = RUNTIME.leases.snapshot()
     snapshot["router"] = {
@@ -322,6 +321,37 @@ async def monitor_snapshot() -> dict[str, Any]:
         "managed": RUNTIME.managed,
     }
     return snapshot
+
+
+@app.get("/monitor/snapshot")
+async def monitor_snapshot() -> dict[str, Any]:
+    """Loopback-only compatibility snapshot for the native monitor."""
+    return _monitor_payload()
+
+
+@app.get("/monitor/events")
+async def monitor_events(request: Request) -> StreamingResponse:
+    """Coalesced live dashboard events without database or inference work."""
+    async def stream():
+        last_revision = -1
+        last_heartbeat = 0.0
+        while not await request.is_disconnected():
+            now = asyncio.get_running_loop().time()
+            revision = RUNTIME.telemetry.revision
+            if revision != last_revision:
+                payload = json.dumps(_monitor_payload(), ensure_ascii=False, separators=(",", ":"))
+                yield f"event: snapshot\ndata: {payload}\n\n"
+                last_revision = revision
+                last_heartbeat = now
+            elif now - last_heartbeat >= 15.0:
+                yield ": heartbeat\n\n"
+                last_heartbeat = now
+            await asyncio.sleep(0.25)
+
+    return StreamingResponse(
+        stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/monitor/history")
@@ -583,6 +613,9 @@ async def responses(request: Request) -> Response:
     display_turn = not _is_codex_title_request(full_input)
     offered = offered_function_names(prepared.get("tools"))
     wants_stream = bool(prepared.get("stream", False))
+    comparison_model = comparison_model_name(
+        os.environ.get("LOCAL_CODEX_COMPARISON_MODEL", DEFAULT_COMPARISON_MODEL)
+    )
 
     LOGGER.info(
         "turn=%s session=%s route=%s reason=%s",
@@ -604,6 +637,10 @@ async def responses(request: Request) -> Response:
                 session_statistics=RUNTIME.usage.statistics(
                     period="all", session_id=decision.session_id, page_size=1
                 ),
+                input_tokens_estimate=max(
+                    1, len(json.dumps(prepared.get("input", full_input), ensure_ascii=False)) // 4
+                ),
+                comparison_model=comparison_model,
             )
         try:
             await RUNTIME.switch_model(decision.model)
@@ -626,9 +663,6 @@ async def responses(request: Request) -> Response:
         return JSONResponse(detail, status_code=upstream.status_code)
 
     if resolved is not None:
-        comparison_model = comparison_model_name(
-            os.environ.get("LOCAL_CODEX_COMPARISON_MODEL", DEFAULT_COMPARISON_MODEL)
-        )
         RUNTIME.usage.record(
             session_id=decision.session_id, turn_id=decision.turn_id,
             model=decision.model, usage=usage,
@@ -639,10 +673,6 @@ async def responses(request: Request) -> Response:
             title = _response_text(resolved)
             if title:
                 RUNTIME.usage.set_session_title(decision.session_id, title)
-        RUNTIME.telemetry.update_session_statistics(
-            decision.session_id,
-            RUNTIME.usage.statistics(period="all", session_id=decision.session_id, page_size=1),
-        )
         if display_turn:
             RUNTIME.telemetry.complete(
                 usage,
@@ -650,6 +680,13 @@ async def responses(request: Request) -> Response:
                 comparison_model=comparison_model,
                 native_timing=resolved,
             )
+        RUNTIME.telemetry.update_session_statistics(
+            decision.session_id,
+            RUNTIME.usage.statistics(period="all", session_id=decision.session_id, page_size=1),
+        )
+        RUNTIME.telemetry.update_all_statistics(
+            RUNTIME.usage.statistics(period="all", page_size=1)
+        )
         LOGGER.info(
             "usage model=%s input_tokens=%d output_tokens=%d comparison_usd=%.6f",
             decision.model, usage.input_tokens, usage.output_tokens,

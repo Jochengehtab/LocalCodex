@@ -12,7 +12,7 @@ import threading
 import time
 from typing import Any
 
-from .usage import TokenUsage
+from .usage import TokenUsage, estimate_cost
 
 
 class TelemetryHub:
@@ -21,6 +21,16 @@ class TelemetryHub:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._state: dict[str, Any] = self._idle_state()
+        self._revision = 0
+
+    def _touch_locked(self) -> None:
+        self._revision += 1
+        self._state["updated_at"] = time.time()
+
+    @property
+    def revision(self) -> int:
+        with self._lock:
+            return self._revision
 
     @staticmethod
     def _idle_state() -> dict[str, Any]:
@@ -46,6 +56,7 @@ class TelemetryHub:
             "metric_source": "ollama.responses.stream",
             "ollama_runtime": {},
             "ollama_version": None,
+            "all_statistics": {},
         }
 
     def start(
@@ -55,9 +66,14 @@ class TelemetryHub:
         session_id: str,
         turn_id: str,
         session_statistics: dict[str, Any] | None = None,
+        input_tokens_estimate: int | None = None,
+        comparison_model: str | None = None,
     ) -> None:
         now = time.time()
         with self._lock:
+            runtime = self._state.get("ollama_runtime", {})
+            version = self._state.get("ollama_version")
+            all_statistics = self._state.get("all_statistics", {})
             self._state = self._idle_state()
             self._state.update(
                 active=True,
@@ -68,20 +84,31 @@ class TelemetryHub:
                 started_at=now,
                 updated_at=now,
                 session_statistics=dict(session_statistics or {}),
+                ollama_runtime=runtime,
+                ollama_version=version,
+                all_statistics=all_statistics,
+                input_tokens=input_tokens_estimate,
+                comparison_model=comparison_model,
             )
+            self._touch_locked()
 
     def update_session_statistics(self, session_id: str, statistics: dict[str, Any]) -> None:
         with self._lock:
             if self._state.get("session_id") == session_id:
                 self._state["session_statistics"] = dict(statistics)
-                self._state["updated_at"] = time.time()
+                self._touch_locked()
+
+    def update_all_statistics(self, statistics: dict[str, Any]) -> None:
+        with self._lock:
+            self._state["all_statistics"] = dict(statistics)
+            self._touch_locked()
 
     def phase(self, value: str, *, tool: str | None = None) -> None:
         with self._lock:
             self._state["phase"] = value
             if tool:
                 self._state["last_tool"] = tool
-            self._state["updated_at"] = time.time()
+            self._touch_locked()
 
     def output_delta(self, text: str) -> None:
         if not text:
@@ -94,7 +121,7 @@ class TelemetryHub:
             self._state["estimated_output_tokens"] += estimate
             self._state["estimated_visible_tokens"] += estimate
             self._state["generation_started_at"] = self._state["generation_started_at"] or now
-            self._state["updated_at"] = now
+            self._touch_locked()
 
     def update_ollama_runtime(self, payload: dict[str, Any], version: str | None = None) -> None:
         models = payload.get("models") if isinstance(payload, dict) else None
@@ -119,9 +146,11 @@ class TelemetryHub:
                     "source": "ollama.api.ps",
                 }
         with self._lock:
-            self._state["ollama_runtime"] = runtime
-            if version:
-                self._state["ollama_version"] = version
+            next_version = version or self._state.get("ollama_version")
+            if runtime != self._state.get("ollama_runtime") or next_version != self._state.get("ollama_version"):
+                self._state["ollama_runtime"] = runtime
+                self._state["ollama_version"] = next_version
+                self._touch_locked()
 
     def complete(
         self,
@@ -162,15 +191,18 @@ class TelemetryHub:
                 comparison_model=comparison_model,
                 error=None,
             )
+            self._touch_locked()
 
     def fail(self, message: str) -> None:
         with self._lock:
             self._state.update(active=False, phase="error", error=message[:300], updated_at=time.time())
+            self._touch_locked()
 
     def snapshot(self) -> dict[str, Any]:
         now = time.time()
         with self._lock:
             value = dict(self._state)
+            revision = self._revision
         started = value.get("started_at")
         value["elapsed_seconds"] = round(max(now - float(started), 0.0), 3) if started else 0.0
         if value["active"] and value["estimated_output_tokens"]:
@@ -185,8 +217,21 @@ class TelemetryHub:
             if first_token and started
             else None
         )
+        live_cost = (
+            estimate_cost(
+                TokenUsage(
+                    input_tokens=int(value.get("input_tokens") or 0),
+                    output_tokens=int(value.get("estimated_output_tokens") or 0),
+                ),
+                str(value.get("comparison_model") or ""),
+            )
+            if value["active"] else 0.0
+        )
+        session_statistics = value.get("session_statistics", {})
+        all_statistics = value.get("all_statistics", {})
         return {
-            "schema_version": 3,
+            "schema_version": 4,
+            "sequence": revision,
             "active": value["active"],
             "phase": value["phase"],
             "model": value["model"],
@@ -206,6 +251,10 @@ class TelemetryHub:
             "error": value["error"],
             "turn": {
                 "active": value["active"], "phase": value["phase"], "model": value["model"],
+                "role": (
+                    "vision" if "vision" in str(value["model"]) else
+                    "plan" if "plan" in str(value["model"]) else "build"
+                ),
                 "turn_id": value["turn_id"], "session_id": value["session_id"],
                 "elapsed_seconds": value["elapsed_seconds"], "last_tool": value["last_tool"],
                 "error": value["error"],
@@ -223,6 +272,11 @@ class TelemetryHub:
                 "time_to_first_token_seconds": value["time_to_first_token_seconds"],
                 "source": value["metric_source"],
             },
+            "context": {
+                "used_tokens": int(value.get("input_tokens") or 0) + int(value.get("estimated_output_tokens") or 0),
+                "capacity_tokens": int(value.get("ollama_runtime", {}).get("context_length") or 0),
+                "estimated": value.get("input_tokens") is None or value.get("output_tokens") is None,
+            },
             "cost": {
                 "comparison_usd": value["comparison_cost_usd"],
                 "comparison_model": value["comparison_model"],
@@ -230,12 +284,35 @@ class TelemetryHub:
             "ollama_runtime": value["ollama_runtime"],
             "ollama_version": value["ollama_version"],
             "session": {
-                **value.get("session_statistics", {}),
+                **session_statistics,
+                "live_input_tokens": (
+                    int(session_statistics.get("input_tokens", 0)) + int(value.get("input_tokens") or 0)
+                    if value["active"] else int(session_statistics.get("input_tokens", 0))
+                ),
                 "live_output_tokens": (
-                    int(value.get("session_statistics", {}).get("output_tokens", 0))
+                    int(session_statistics.get("output_tokens", 0))
                     + int(value["estimated_output_tokens"])
                     if value["active"] else
-                    int(value.get("session_statistics", {}).get("output_tokens", 0))
+                    int(session_statistics.get("output_tokens", 0))
+                ),
+                "live_saved_usd": round(
+                    float(session_statistics.get("estimated_saved_usd", 0.0)) + live_cost, 8
+                ),
+            },
+            "total": {
+                **all_statistics,
+                "live_input_tokens": (
+                    int(all_statistics.get("input_tokens", 0)) + int(value.get("input_tokens") or 0)
+                    if value["active"] else int(all_statistics.get("input_tokens", 0))
+                ),
+                "live_output_tokens": (
+                    int(all_statistics.get("output_tokens", 0))
+                    + int(value["estimated_output_tokens"])
+                    if value["active"] else
+                    int(all_statistics.get("output_tokens", 0))
+                ),
+                "live_saved_usd": round(
+                    float(all_statistics.get("estimated_saved_usd", 0.0)) + live_cost, 8
                 ),
             },
         }

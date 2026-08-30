@@ -136,12 +136,13 @@ Erstinstallation ohne Messwerte werden 8K genutzt:
 ./.venv/bin/python start_codex.py --setup
 ```
 
-Der Hardwarebenchmark prüft 8K, 16K, 32K, 64K und 128K. Für jedes Kontextprofil
-werden Plan und Build zweimal auf einen korrekten Tool-Call geprüft; Vision muss zweimal die
-Farben eines lokal erzeugten Testbildes erkennen. Das größte Profil wird nur gewählt, wenn alle Prüfungen
-bestehen, mindestens 3 GiB RAM frei bleiben, der Swap-Anstieg höchstens 1 GiB beträgt und kein
-Modell mehr als doppelt so lange wie bei 8K benötigt. Messwerte stehen in
-`.codex-local/runtime.json`.
+`codex-local benchmark` prüft 8K, 16K, 32K, 64K und 128K für Plan, Build und Vision
+unabhängig. Plan und Build müssen korrekte Tool-Calls liefern; Vision erkennt die Farben eines
+lokal erzeugten Testbildes. Pro Modell wird das größte stabile Profil empfohlen, wenn alle
+Prüfungen bestehen, mindestens 3 GiB RAM frei bleiben, der Swap-Anstieg höchstens 1 GiB beträgt
+und die Medianlaufzeit höchstens doppelt so hoch wie beim kleinsten Profil ist. Der Bericht liegt
+unter `.codex-local/state/context-benchmark.json`; übernommen wird erst nach Bestätigung oder mit
+`--apply`.
 
 Qwen3.8, Qwen3.6 und Qwen3-VL unterstützen laut Modellkatalog nativ 256K. Das bedeutet
 nicht automatisch, dass 128K auf jeder Hardware sinnvoll läuft: der KV-Cache wächst stark mit
@@ -158,8 +159,9 @@ ausführen; dabei werden die Ollama-Aliase mit dem neuen `num_ctx` neu erstellt.
   Weil Codex 0.151 MCP-Werkzeuge für neuere OpenAI-Modelle verzögert lädt, führt der Router die
   beiden lokalen Web-Tool-Calls für Qwen selbst aus und gibt erst die fertige Antwort zurück.
 - `monitor` enthält die plattformübergreifende C++20-Singleton-App. Releases veröffentlichen
-  sie nach `%LOCALAPPDATA%\LocalCodex` beziehungsweise ins Linux-Installationsverzeichnis; das UI pollt nur den flüchtigen
-  `/monitor/snapshot`-Status mit maximal vier Anfragen pro Sekunde.
+  sie nach `%LOCALAPPDATA%\LocalCodex` beziehungsweise ins Linux-Installationsverzeichnis. Das UI
+  empfängt koaleszierte Livewerte über `/monitor/events`; `/monitor/snapshot` wird nur als
+  niedrigfrequenter Kompatibilitätsfallback verwendet.
 - `local_codex/monitor.py` koordiniert parallele Launcher über kurzlebige Heartbeat-Leases,
   damit nicht das zuerst geschlossene Codex-Fenster den gemeinsamen Router beendet.
 - `local_codex/routing.py` übernimmt automatische, turn-stabile Modellwahl.

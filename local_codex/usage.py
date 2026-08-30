@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .i18n import tr
+
 
 PRICES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
     "gpt-5.6-luna": (0.20, 1.20),
@@ -237,7 +239,7 @@ class UsageStore:
         sessions = [
             {
                 "session_id": row[0],
-                "title": row[1] or f"Sitzung {str(row[0])[:8]}",
+                "title": row[1] or tr("session.untitled", id=str(row[0])[:8]),
                 "first_seen_at": row[2],
                 "last_seen_at": row[3],
                 "duration_seconds": max(float(row[3] or 0) - float(row[2] or 0), 0.0),

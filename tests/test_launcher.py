@@ -36,5 +36,15 @@ class LauncherTests(unittest.TestCase):
         self.assertIs(started, process)
         self.assertIs(popen.call_args.kwargs["stdin"], start_codex.subprocess.DEVNULL)
 
+    @patch("start_codex.subprocess.run")
+    def test_benchmark_command_is_forwarded(self, run):
+        run.return_value.returncode = 0
+        with patch("start_codex.map_cli_paths", return_value=["benchmark", "--json"]):
+            with patch("start_codex.sys.argv", ["start_codex.py", "benchmark", "--json"]):
+                self.assertEqual(0, start_codex.main())
+        command = run.call_args.args[0]
+        self.assertIn("--benchmark", command)
+        self.assertIn("--json", command)
+
 if __name__ == "__main__":
     unittest.main()

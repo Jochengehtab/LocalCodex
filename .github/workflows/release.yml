@@ -1,32 +1,68 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semantic version without the v prefix
+        required: true
+        type: string
+      prerelease:
+        description: Publish as a prerelease
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
   id-token: write
   attestations: write
 
+concurrency:
+  group: localcodex-release
+  cancel-in-progress: false
+
 jobs:
-  validate:
+  prepare:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.version.outputs.sha }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main
+          fetch-depth: 0
       - id: version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          version=$(tr -d '[:space:]' < VERSION)
-          test "$GITHUB_REF_NAME" = "v$version"
+          version="$RELEASE_VERSION"
+          version="${version#v}"
+          python scripts/set_version.py "$version"
+          if ! git diff --quiet -- VERSION; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add VERSION
+            git commit -m "chore(release): v$version"
+            git push origin HEAD:main
+          fi
+          sha=$(git rev-parse HEAD)
+          if git rev-parse "v$version" >/dev/null 2>&1; then
+            test "$(git rev-list -n 1 "v$version")" = "$sha"
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${{ inputs.prerelease }}" >> "$GITHUB_OUTPUT"
 
   core:
-    needs: validate
+    needs: prepare
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
@@ -35,17 +71,17 @@ jobs:
       - run: python -m unittest discover -s tests -v
         env:
           LOCAL_CODEX_LIVE_TESTS: "0"
-      - run: bash -n install.sh && chmod +x install.sh && bash ./install.sh --dry-run --version "${{ needs.validate.outputs.version }}" --yes
+      - run: bash -n install.sh && chmod +x install.sh && bash ./install.sh --dry-run --version "${{ needs.prepare.outputs.version }}" --yes
       - run: |
           tar --exclude=.git --exclude=.github --exclude=.venv --exclude=.codex-local --exclude=build \
-            -czf "localcodex-core-v${{ needs.validate.outputs.version }}.tar.gz" .
+            -czf "localcodex-core-v${{ needs.prepare.outputs.version }}.tar.gz" .
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: core
           path: localcodex-core-*.tar.gz
 
   monitor:
-    needs: validate
+    needs: prepare
     strategy:
       matrix:
         include:
@@ -56,6 +92,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - if: runner.os == 'Linux'
         run: >-
           sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev
@@ -67,33 +105,49 @@ jobs:
       - name: Windows installer dry run
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./install.ps1 -DryRun -Version "${{ needs.validate.outputs.version }}"
+        run: ./install.ps1 -DryRun -Version "${{ needs.prepare.outputs.version }}"
       - run: cmake --install build --config Release --prefix stage
       - name: Package Linux monitor
         if: runner.os == 'Linux'
-        run: tar -C stage -czf "localcodex-monitor-${{ matrix.platform }}-v${{ needs.validate.outputs.version }}.tar.gz" .
+        run: tar -C stage -czf "localcodex-monitor-${{ matrix.platform }}-v${{ needs.prepare.outputs.version }}.tar.gz" .
       - name: Package Windows monitor
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path stage/* -DestinationPath "localcodex-monitor-${{ matrix.platform }}-v${{ needs.validate.outputs.version }}.zip"
+        run: Compress-Archive -Path stage/* -DestinationPath "localcodex-monitor-${{ matrix.platform }}-v${{ needs.prepare.outputs.version }}.zip"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: monitor-${{ matrix.platform }}
           path: localcodex-monitor-*
 
   publish:
-    needs: [validate, core, monitor]
+    needs: [prepare, core, monitor]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           path: dist
           merge-multiple: true
-      - run: python scripts/release_manifest.py "${{ needs.validate.outputs.version }}" dist
+      - run: python scripts/release_manifest.py "${{ needs.prepare.outputs.version }}" dist
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-path: dist/*
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "v${{ needs.validate.outputs.version }}" dist/* --verify-tag --generate-notes --title "LocalCodex v${{ needs.validate.outputs.version }}"
+        run: |
+          tag="v${{ needs.prepare.outputs.version }}"
+          sha="${{ needs.prepare.outputs.sha }}"
+          if ! git rev-parse "$tag" >/dev/null 2>&1; then
+            git tag -a "$tag" "$sha" -m "LocalCodex $tag"
+            git push origin "$tag"
+          fi
+          prerelease=()
+          if [ "${{ needs.prepare.outputs.prerelease }}" = "true" ]; then prerelease=(--prerelease); fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --verify-tag --generate-notes --title "LocalCodex $tag" "${prerelease[@]}"
+          fi

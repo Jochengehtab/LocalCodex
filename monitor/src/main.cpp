@@ -20,6 +20,7 @@
 #include <fstream>
 #include <iomanip>
 #include <mutex>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -46,6 +47,13 @@ std::string compact_number(std::int64_t value) {
     if (value >= 1'000'000) out << std::fixed << std::setprecision(2) << value / 1'000'000.0 << "M";
     else if (value >= 1'000) out << std::fixed << std::setprecision(1) << value / 1'000.0 << "K";
     else out << value;
+    return out.str();
+}
+
+std::string compact_bytes(std::int64_t value) {
+    if (value <= 0) return "-";
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1) << value / (1024.0 * 1024.0 * 1024.0) << " GiB";
     return out.str();
 }
 
@@ -91,7 +99,7 @@ private:
 struct Settings {
     int theme{};
     std::string period{"24h"};
-    int refresh_ms{250};
+    int refresh_ms{1000};
     std::string language;
 };
 
@@ -110,7 +118,7 @@ Settings load_settings() {
         input >> value;
         result.theme = value.value("theme", 0);
         result.period = value.value("period", "24h");
-        result.refresh_ms = std::clamp(value.value("refresh_ms", 250), 100, 2000);
+        result.refresh_ms = std::clamp(value.value("refresh_ms", 1000), 1000, 5000);
         result.language = value.value("language", "");
     } catch (...) {}
     if (result.language.empty()) result.language = localcodex::i18n::language();
@@ -148,18 +156,32 @@ void apply_theme(int theme) {
 class MonitorClient {
 public:
     MonitorClient(std::string host, int port, int refresh_ms)
-        : host_(std::move(host)), port_(port), refresh_ms_(refresh_ms), worker_(&MonitorClient::run, this) {}
-    ~MonitorClient() { stop_ = true; if (worker_.joinable()) worker_.join(); }
+        : host_(std::move(host)), port_(port), refresh_ms_(refresh_ms),
+          event_http_(host_, port_), sse_(event_http_, "/monitor/events") {
+        event_http_.set_connection_timeout(1, 0);
+        event_http_.set_read_timeout(20, 0);
+        event_worker_ = std::thread(&MonitorClient::run_events, this);
+        statistics_worker_ = std::thread(&MonitorClient::run_statistics, this);
+    }
+    ~MonitorClient() {
+        stop_ = true;
+        sse_.stop();
+        if (event_worker_.joinable()) event_worker_.join();
+        if (statistics_worker_.joinable()) statistics_worker_.join();
+    }
 
     localcodex::MonitorState state() const { std::scoped_lock guard(mutex_); return state_; }
-    std::vector<double> samples() const { std::scoped_lock guard(mutex_); return samples_; }
+    std::vector<localcodex::GraphPoint> graph_points() const { std::scoped_lock guard(mutex_); return graph_.points(); }
+    double graph_x_max() const { std::scoped_lock guard(mutex_); return graph_.x_max(); }
+    double graph_y_max() const { std::scoped_lock guard(mutex_); return graph_.y_max(); }
     void select_period(const std::string& period) {
         std::scoped_lock guard(mutex_); requested_period_ = period; force_statistics_ = true;
     }
     void select_session(const std::string& session) {
         std::scoped_lock guard(mutex_); selected_session_ = session; force_statistics_ = true;
     }
-    void set_refresh_ms(int value) { refresh_ms_ = std::clamp(value, 100, 2000); }
+    void set_refresh_ms(int value) { refresh_ms_ = std::clamp(value, 1000, 5000); }
+    void set_history_visible(bool value) { history_visible_ = value; }
     bool export_usage(const std::string& format, std::string& result) {
         std::string period, session;
         { std::scoped_lock guard(mutex_); period = requested_period_; session = selected_session_; }
@@ -182,36 +204,51 @@ public:
     }
 
 private:
-    void run() {
-        auto next_stats = std::chrono::steady_clock::now();
+    void apply_live(const nlohmann::json& value) {
+        std::scoped_lock guard(mutex_);
+        localcodex::apply_snapshot(state_, value);
+        graph_.add(state_);
+    }
+
+    void run_events() {
+        sse_.on_event("snapshot", [this](const httplib::sse::SSEMessage& message) {
+            try { apply_live(nlohmann::json::parse(message.data)); } catch (...) {}
+        });
+        sse_.set_reconnect_interval(1000).set_max_reconnect_attempts(1);
+        sse_.start();
+
+        // Compatibility fallback for schema-3 routers without /monitor/events.
         while (!stop_) {
-            bool online = false;
             try {
                 httplib::Client http(host_, port_);
                 http.set_connection_timeout(0, 500000);
                 http.set_read_timeout(1, 0);
                 auto response = http.Get("/monitor/snapshot");
                 if (response && response->status == 200) {
-                    auto json = nlohmann::json::parse(response->body);
-                    std::scoped_lock guard(mutex_);
-                    localcodex::apply_snapshot(state_, json);
-                    samples_.push_back(state_.tokens_per_second);
-                    if (samples_.size() > 240) samples_.erase(samples_.begin());
-                    online = true;
+                    apply_live(nlohmann::json::parse(response->body));
+                } else {
+                    std::scoped_lock guard(mutex_); state_.online = false; state_.phase = "offline";
                 }
-            } catch (...) {}
-            if (!online) { std::scoped_lock guard(mutex_); state_.online = false; state_.phase = "offline"; }
+            } catch (...) { std::scoped_lock guard(mutex_); state_.online = false; state_.phase = "offline"; }
+            const int delay = refresh_ms_.load();
+            for (int elapsed = 0; elapsed < delay && !stop_; elapsed += 50) std::this_thread::sleep_for(50ms);
+        }
+    }
 
+    void run_statistics() {
+        auto next_stats = std::chrono::steady_clock::now();
+        while (!stop_) {
             bool refresh_stats{};
             std::string period, session;
             {
                 std::scoped_lock guard(mutex_);
-                refresh_stats = force_statistics_ || std::chrono::steady_clock::now() >= next_stats;
+                refresh_stats = force_statistics_ ||
+                    (history_visible_.load() && std::chrono::steady_clock::now() >= next_stats);
                 force_statistics_ = false;
                 period = requested_period_;
                 session = selected_session_;
             }
-            if (online && refresh_stats) {
+            if (state().online && refresh_stats) {
                 std::string path = "/monitor/statistics?period=" + url_encode(period) + "&page_size=100";
                 if (!session.empty()) path += "&session_id=" + url_encode(session);
                 try {
@@ -224,23 +261,25 @@ private:
                 } catch (...) {}
                 next_stats = std::chrono::steady_clock::now() + 10s;
             }
-            int delay;
-            { std::scoped_lock guard(mutex_); delay = state_.active ? refresh_ms_.load() : 1000; }
-            for (int elapsed = 0; elapsed < delay && !stop_; elapsed += 50) std::this_thread::sleep_for(50ms);
+            for (int elapsed = 0; elapsed < 250 && !stop_; elapsed += 50) std::this_thread::sleep_for(50ms);
         }
     }
 
     std::string host_;
     int port_{};
-    std::atomic_int refresh_ms_{250};
+    std::atomic_int refresh_ms_{1000};
+    std::atomic_bool history_visible_{};
     mutable std::mutex mutex_;
     localcodex::MonitorState state_;
-    std::vector<double> samples_;
+    localcodex::SessionGraph graph_;
     std::string requested_period_{"24h"};
     std::string selected_session_;
     bool force_statistics_{true};
     std::atomic_bool stop_{};
-    std::thread worker_;
+    httplib::Client event_http_;
+    httplib::sse::SSEClient sse_;
+    std::thread event_worker_;
+    std::thread statistics_worker_;
 };
 
 void metric_card(const char* title, const std::string& value, const char* hint) {
@@ -357,6 +396,7 @@ int run_monitor(int argc, char** argv) {
         if (ImGui::Button(localcodex::i18n::tr("tab.dashboard"))) tab = 0;
         ImGui::SameLine(); if (ImGui::Button(localcodex::i18n::tr("tab.history"))) tab = 1;
         ImGui::SameLine(); if (ImGui::Button(localcodex::i18n::tr("tab.settings"))) tab = 2;
+        client.set_history_visible(tab == 1);
         ImGui::Separator();
 
         if (tab == 0) {
@@ -370,12 +410,26 @@ int run_monitor(int argc, char** argv) {
                 ImGui::TableNextColumn(); metric_card(localcodex::i18n::tr("metric.saved"), saved.str(), localcodex::i18n::tr("hint.api_comparison"));
                 ImGui::EndTable();
             }
+            if (ImGui::BeginTable("total_cards", 4, ImGuiTableFlags_SizingStretchSame)) {
+                ImGui::TableNextColumn(); metric_card(localcodex::i18n::tr("metric.total_input"), compact_number(state.total_input), localcodex::i18n::tr("hint.usage_exact"));
+                ImGui::TableNextColumn(); metric_card(localcodex::i18n::tr("metric.total_output"), compact_number(state.total_output), localcodex::i18n::tr("hint.usage_live"));
+                std::ostringstream total_saved; total_saved << '$' << std::fixed << std::setprecision(6) << state.total_saved_usd;
+                ImGui::TableNextColumn(); metric_card(localcodex::i18n::tr("metric.total_saved"), total_saved.str(), localcodex::i18n::tr("hint.api_comparison"));
+                const double context_percent = state.context_length > 0 ? 100.0 * state.context_used / state.context_length : 0.0;
+                std::ostringstream context_value; context_value << compact_number(state.context_used) << " / " << compact_number(state.context_length);
+                std::ostringstream context_hint; context_hint << std::fixed << std::setprecision(1) << context_percent << "%";
+                ImGui::TableNextColumn(); metric_card(localcodex::i18n::tr("metric.context"), context_value.str(), context_hint.str().c_str());
+                ImGui::EndTable();
+            }
             ImGui::BeginChild("throughput", ImVec2(ImGui::GetContentRegionAvail().x * .62f, 300), ImGuiChildFlags_Borders);
             ImGui::TextUnformatted(localcodex::i18n::tr("throughput.title"));
-            auto samples = client.samples();
+            auto points = client.graph_points();
             if (ImPlot::BeginPlot("##throughput_plot", ImVec2(-1, -1))) {
-                ImPlot::SetupAxes(nullptr, "Tokens/s", ImPlotAxisFlags_NoTickLabels, ImPlotAxisFlags_AutoFit);
-                if (!samples.empty()) ImPlot::PlotLine("Tokens/s", samples.data(), static_cast<int>(samples.size()));
+                ImPlot::SetupAxes(localcodex::i18n::tr("plot.seconds"), "Tokens/s", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+                ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, client.graph_x_max(), ImGuiCond_Always);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, client.graph_y_max(), ImGuiCond_Always);
+                if (!points.empty()) ImPlot::PlotLine("Tokens/s", &points.front().x, &points.front().y,
+                    static_cast<int>(points.size()), {ImPlotProp_Stride, sizeof(localcodex::GraphPoint)});
                 ImPlot::EndPlot();
             }
             ImGui::EndChild();
@@ -389,7 +443,12 @@ int run_monitor(int argc, char** argv) {
             ImGui::Text(context_format, compact_number(state.context_length).c_str());
             ImGui::Text("Ollama: %s", state.ollama_version.c_str());
             ImGui::Text("TTFT: %.2f s", state.ttft_seconds);
-            ImGui::Text("Laufzeit: %.1f s", state.elapsed_seconds);
+            ImGui::Text(localcodex::i18n::tr("runtime.elapsed"), state.elapsed_seconds);
+            ImGui::Text(localcodex::i18n::tr("runtime.turn_tokens"), compact_number(state.turn_input).c_str(), compact_number(state.turn_output).c_str());
+            ImGui::Text(localcodex::i18n::tr("runtime.memory"), compact_bytes(state.model_size_bytes).c_str(), compact_bytes(state.vram_size_bytes).c_str());
+            ImGui::Text(localcodex::i18n::tr("runtime.phase"), state.phase.c_str());
+            ImGui::Text(localcodex::i18n::tr("runtime.tool"), state.last_tool.empty() ? "-" : state.last_tool.c_str());
+            ImGui::Text(localcodex::i18n::tr("runtime.launchers"), static_cast<long long>(state.active_launchers));
             ImGui::EndChild();
         } else if (tab == 1) {
             const char* periods[] = {"24h", "7d", "30d", "all"};
@@ -434,7 +493,7 @@ int run_monitor(int argc, char** argv) {
                 localcodex::i18n::set_language(settings.language);
                 save_settings(settings);
             }
-            if (ImGui::SliderInt(localcodex::i18n::tr("settings.refresh"), &settings.refresh_ms, 100, 2000)) {
+            if (ImGui::SliderInt(localcodex::i18n::tr("settings.refresh"), &settings.refresh_ms, 1000, 5000)) {
                 client.set_refresh_ms(settings.refresh_ms);
                 save_settings(settings);
             }

@@ -18,6 +18,7 @@ struct SessionRow {
 };
 
 struct MonitorState {
+    std::int64_t sequence{};
     bool online{};
     bool active{};
     bool ever_had_launcher{};
@@ -25,23 +26,50 @@ struct MonitorState {
     std::string phase{"offline"};
     std::string model{"-"};
     std::string session_id;
+    std::string turn_id;
+    std::string role;
+    std::string last_tool;
+    double updated_at{};
     std::int64_t turn_input{};
     std::int64_t turn_output{};
     std::int64_t session_input{};
     std::int64_t session_output{};
     std::int64_t period_input{};
     std::int64_t period_output{};
+    std::int64_t total_input{};
+    std::int64_t total_output{};
     double tokens_per_second{};
     double ttft_seconds{};
     double elapsed_seconds{};
     double session_saved_usd{};
     double period_saved_usd{};
+    double total_saved_usd{};
     std::string ollama_version;
     std::string runtime_name;
     std::string parameter_size;
     std::string quantization;
     std::int64_t context_length{};
+    std::int64_t context_used{};
+    std::int64_t model_size_bytes{};
+    std::int64_t vram_size_bytes{};
     std::vector<SessionRow> sessions;
+};
+
+struct GraphPoint { double x{}; double y{}; };
+
+class SessionGraph {
+public:
+    void add(const MonitorState& state);
+    const std::vector<GraphPoint>& points() const { return points_; }
+    double x_max() const;
+    double y_max() const;
+private:
+    void compact();
+    std::string session_id_;
+    std::string turn_id_;
+    double started_at_{};
+    double last_at_{};
+    std::vector<GraphPoint> points_;
 };
 
 void apply_snapshot(MonitorState& state, const nlohmann::json& value);

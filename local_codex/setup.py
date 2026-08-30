@@ -10,6 +10,7 @@ import shutil
 import statistics
 import struct
 import subprocess
+import sys
 import threading
 import time
 import zlib
@@ -19,6 +20,7 @@ from typing import Any
 
 import httpx
 
+from .i18n import tr
 from .settings import LOCAL_HOME, LOCAL_INSTRUCTIONS, MODELS_DIR, ROOT, SETTINGS, STATE_DIR
 
 
@@ -37,7 +39,7 @@ FINAL_MODELS = {
 # these profiles is safe instead of silently selecting an OOM-prone maximum.
 CONTEXT_CANDIDATES = (8192, 16384, 32768, 65536, 131072)
 GIB = 1024 * 1024 * 1024
-CONFIG_VERSION = 10
+CONFIG_VERSION = 11
 VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 
 
@@ -63,7 +65,21 @@ def verify_prerequisites() -> None:
     installed = available_models()
     missing = [model for model in RAW_MODELS.values() if model not in installed]
     if missing:
-        raise RuntimeError(f"Fehlende Ollama-Modelle: {', '.join(missing)}")
+        raise RuntimeError(tr("setup.missing_models", models=", ".join(missing)))
+
+
+def verify_benchmark_idle() -> None:
+    """Refuse to benchmark while the managed router is serving a Codex session."""
+    try:
+        response = httpx.get(f"http://{SETTINGS.host}:{SETTINGS.port}/monitor/snapshot", timeout=1.0)
+        if response.status_code != 200:
+            return
+        snapshot = response.json()
+        sessions = snapshot.get("sessions") if isinstance(snapshot.get("sessions"), dict) else {}
+        if snapshot.get("active") or int(sessions.get("active_count", 0)) > 0:
+            raise RuntimeError(tr("setup.benchmark_active"))
+    except httpx.HTTPError:
+        return
 
 
 def create_alias(alias: str, source: str, context: int) -> Path:
@@ -167,8 +183,11 @@ def benchmark_model(alias: str, role: str, repetitions: int = 2) -> dict[str, An
         },
     }
     durations: list[float] = []
+    throughputs: list[float] = []
     minimum_available = 2**63 - 1
     maximum_swap = 0
+    maximum_model_bytes = 0
+    maximum_vram_bytes = 0
     successes = 0
     for _ in range(repetitions):
         unload_model(alias)
@@ -217,8 +236,21 @@ def benchmark_model(alias: str, role: str, repetitions: int = 2) -> dict[str, An
         durations.append(time.monotonic() - start)
         minimum_available = min(minimum_available, sampler.minimum_available)
         maximum_swap = max(maximum_swap, sampler.maximum_swap)
+        try:
+            loaded = httpx.get(f"{SETTINGS.ollama_base_url}/api/ps", timeout=3.0).json().get("models", [])
+            current = next((item for item in loaded if item.get("name") == alias), {})
+            maximum_model_bytes = max(maximum_model_bytes, int(current.get("size") or 0))
+            maximum_vram_bytes = max(maximum_vram_bytes, int(current.get("size_vram") or 0))
+        except (httpx.HTTPError, ValueError, TypeError):
+            pass
         if response is not None and response.status_code == 200:
-            output = response.json().get("output", [])
+            payload = response.json()
+            output = payload.get("output", [])
+            usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+            eval_count = payload.get("eval_count", usage.get("output_tokens"))
+            eval_duration = payload.get("eval_duration")
+            if isinstance(eval_count, (int, float)) and isinstance(eval_duration, (int, float)) and eval_duration > 0:
+                throughputs.append(float(eval_count) / (float(eval_duration) / 1_000_000_000))
             if role == "vision":
                 answer = " ".join(
                     part.get("text", "")
@@ -236,70 +268,72 @@ def benchmark_model(alias: str, role: str, repetitions: int = 2) -> dict[str, An
         "successes": successes,
         "repetitions": repetitions,
         "median_seconds": statistics.median(durations),
+        "median_tokens_per_second": round(statistics.median(throughputs), 3) if throughputs else None,
         "minimum_available_bytes": minimum_available,
         "maximum_swap_bytes": maximum_swap,
+        "model_size_bytes": maximum_model_bytes,
+        "vram_size_bytes": maximum_vram_bytes,
     }
 
 
-def benchmark_contexts() -> tuple[int, dict[str, Any]]:
+def benchmark_contexts(
+    *, roles: tuple[str, ...] = ("plan", "build", "vision"),
+    contexts: tuple[int, ...] = CONTEXT_CANDIDATES,
+    repetitions: int = 2,
+) -> tuple[dict[str, int], dict[str, Any]]:
     baseline_swap = memory_snapshot()[1]
-    report: dict[str, Any] = {}
+    report: dict[str, Any] = {
+        "schema_version": 2,
+        "created_at": time.time(),
+        "contexts": list(contexts),
+        "repetitions": repetitions,
+        "models": {},
+    }
+    recommendations: dict[str, int] = {}
     aliases: list[str] = []
     try:
-        for context in CONTEXT_CANDIDATES:
-            context_report: dict[str, Any] = {}
-            for role, source in RAW_MODELS.items():
+        for alias in FINAL_MODELS.values():
+            unload_model(alias)
+        for role in roles:
+            source = RAW_MODELS[role]
+            role_report: dict[str, Any] = {"source_model": source, "profiles": {}}
+            baseline: dict[str, Any] | None = None
+            passing: list[int] = []
+            for context in contexts:
                 alias = f"local-codex-{role}-{context}"
                 aliases.append(alias)
                 create_alias(alias, source, context)
-                result = benchmark_model(alias, role)
-                context_report[role] = result
-                measurement = "Bildantworten" if role == "vision" else "Tool-Calls"
-                print(
-                    f"{context // 1024}K {role}: {result['successes']}/"
-                    f"{result['repetitions']} {measurement}, Median "
-                    f"{result['median_seconds']:.1f}s"
+                result = benchmark_model(alias, role, repetitions=repetitions)
+                role_report["profiles"][str(context)] = result
+                measurement = tr("setup.vision_answers" if role == "vision" else "setup.tool_calls")
+                print(tr(
+                    "setup.benchmark_result", context=context // 1024, role=role,
+                    successes=result["successes"], repetitions=result["repetitions"],
+                    measurement=measurement, seconds=result["median_seconds"],
+                ))
+                baseline = baseline or result
+                failed = (
+                    result["successes"] < result["repetitions"]
+                    or result["minimum_available_bytes"] < 3 * GIB
+                    or result["maximum_swap_bytes"] - baseline_swap > GIB
+                    or (
+                        context != contexts[0]
+                        and result["median_seconds"] > 2 * baseline["median_seconds"]
+                    )
                 )
-            report[str(context)] = context_report
-
-            # Context memory is monotonic for a fixed model/quantization.  If
-            # a profile already fails its correctness/resource checks, do not
-            # probe an even larger profile: that would only increase the risk
-            # of swapping or an OOM kill.  The selection pass below will keep
-            # the largest profile that passed before this point.
-            if any(
-                result["successes"] < result["repetitions"]
-                or result["minimum_available_bytes"] < 3 * GIB
-                or result["maximum_swap_bytes"] - baseline_swap > GIB
-                for result in context_report.values()
-            ):
-                break
-
-        baseline = report[str(CONTEXT_CANDIDATES[0])]
-        passing: list[int] = []
-        for context in CONTEXT_CANDIDATES:
-            current = report.get(str(context))
-            if current is None:
-                # A failed profile stops the ascending probe; larger profiles
-                # were intentionally not attempted.
-                break
-            stable = all(
-                result["successes"] == result["repetitions"]
-                and result["minimum_available_bytes"] >= 3 * GIB
-                and result["maximum_swap_bytes"] - baseline_swap <= GIB
-                and (
-                    context == CONTEXT_CANDIDATES[0]
-                    or result["median_seconds"] <= 2 * baseline[role]["median_seconds"]
-                )
-                for role, result in current.items()
-            )
-            if stable:
+                if failed:
+                    break
                 passing.append(context)
-        if passing:
-            return max(passing), report
-        raise RuntimeError("Keines der Kontextprofile hat den Stabilitätstest bestanden")
+            if not passing:
+                raise RuntimeError(f"No stable context profile for {role}")
+            recommendations[role] = max(passing)
+            role_report["recommended_context"] = recommendations[role]
+            report["models"][role] = role_report
+        report["recommendations"] = recommendations
+        return recommendations, report
     finally:
         for alias in aliases:
+            unload_model(alias)
             remove_alias(alias)
 
 
@@ -567,10 +601,14 @@ def refresh_config(build_monitor: bool = False) -> dict[str, Any]:
             runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
-    context = int(runtime.get("context_window", 8192))
+    context_windows = runtime.get("context_windows")
+    if not isinstance(context_windows, dict):
+        context_windows = {role: int(runtime.get("context_window", 8192)) for role in RAW_MODELS}
+    context = min(int(context_windows.get(role, 8192)) for role in RAW_MODELS)
     generate_model_catalog(context)
     write_codex_config(context)
     runtime["context_window"] = context
+    runtime["context_windows"] = context_windows
     runtime["models"] = FINAL_MODELS
     runtime["settings"] = asdict(SETTINGS)
     runtime["monitor"] = install_native_monitor(build_monitor)
@@ -594,18 +632,37 @@ def install(context: int | None, benchmark: bool, build_monitor: bool = False) -
             previous_runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
+    previous_windows = previous_runtime.get("context_windows")
+    if not isinstance(previous_windows, dict):
+        previous_windows = {}
     report: dict[str, Any] = previous_runtime.get("hardware_benchmark", {})
     if benchmark:
-        selected_context, report = benchmark_contexts()
+        verify_benchmark_idle()
+        recommendations, report = benchmark_contexts()
+        apply_recommendations = (
+            sys.stdin.isatty()
+            and input(tr("setup.apply_contexts")).strip().lower() in {"y", "yes", "j", "ja"}
+        )
+        if apply_recommendations:
+            selected_contexts = recommendations
+        else:
+            selected_contexts = {
+                role: int(previous_windows.get(
+                    role, previous_runtime.get("context_window", 8192)
+                )) for role in RAW_MODELS
+            }
     else:
         selected_context = context or previous_runtime.get("context_window", 8192)
+        selected_contexts = {role: int(selected_context) for role in RAW_MODELS}
     for role, source in RAW_MODELS.items():
-        create_alias(FINAL_MODELS[role], source, selected_context)
-    generate_model_catalog(selected_context)
-    write_codex_config(selected_context)
+        create_alias(FINAL_MODELS[role], source, selected_contexts[role])
+    advertised_context = min(selected_contexts.values())
+    generate_model_catalog(advertised_context)
+    write_codex_config(advertised_context)
     runtime = {
         "config_version": CONFIG_VERSION,
-        "context_window": selected_context,
+        "context_window": advertised_context,
+        "context_windows": selected_contexts,
         "models": FINAL_MODELS,
         "hardware_benchmark": report,
         "settings": asdict(SETTINGS),
@@ -619,19 +676,105 @@ def install(context: int | None, benchmark: bool, build_monitor: bool = False) -
     return runtime
 
 
+def run_benchmark_command(
+    *, roles: tuple[str, ...], contexts: tuple[int, ...], repetitions: int,
+    apply: bool, assume_yes: bool, json_output: bool,
+) -> dict[str, Any]:
+    verify_prerequisites()
+    verify_benchmark_idle()
+    LOCAL_HOME.mkdir(parents=True, exist_ok=True)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    runtime_path = LOCAL_HOME / "runtime.json"
+    try:
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        runtime = {}
+    recommendations, report = benchmark_contexts(
+        roles=roles, contexts=contexts, repetitions=repetitions
+    )
+    report_path = STATE_DIR / "context-benchmark.json"
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    runtime["hardware_benchmark"] = report
+    runtime_path.write_text(json.dumps(runtime, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if json_output:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print("\n" + tr("setup.recommendations"))
+        for role, value in recommendations.items():
+            print(f"  {role}: {value // 1024}K")
+        print(tr("setup.report", path=report_path))
+
+    should_apply = apply or assume_yes
+    if not should_apply and sys.stdin.isatty():
+        should_apply = input(tr("setup.apply_contexts")).strip().lower() in {"y", "yes", "j", "ja"}
+    if not should_apply:
+        return report
+
+    previous = runtime.get("context_windows")
+    if not isinstance(previous, dict):
+        previous = {role: int(runtime.get("context_window", 8192)) for role in RAW_MODELS}
+    selected = {role: int(previous.get(role, 8192)) for role in RAW_MODELS}
+    selected.update(recommendations)
+    try:
+        for role, source in RAW_MODELS.items():
+            create_alias(FINAL_MODELS[role], source, selected[role])
+        advertised = min(selected.values())
+        generate_model_catalog(advertised)
+        write_codex_config(advertised)
+    except Exception:
+        for role, source in RAW_MODELS.items():
+            try:
+                create_alias(FINAL_MODELS[role], source, int(previous.get(role, 8192)))
+            except (OSError, subprocess.CalledProcessError, httpx.HTTPError):
+                pass
+        raise
+    runtime.update({
+        "config_version": CONFIG_VERSION,
+        "context_window": advertised,
+        "context_windows": selected,
+        "models": FINAL_MODELS,
+        "hardware_benchmark": report,
+        "settings": asdict(SETTINGS),
+    })
+    runtime_path.write_text(json.dumps(runtime, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    validate_config()
+    print(tr("setup.applied"))
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Set up local Codex for Ollama")
     parser.add_argument("--benchmark", action="store_true", help="Test 8K, 16K, 32K, 64K and 128K")
     parser.add_argument("--context", type=int, choices=CONTEXT_CANDIDATES)
     parser.add_argument("--refresh-config", action="store_true", help="Refresh Codex and MCP config without recreating Ollama models")
     parser.add_argument("--build-monitor", action="store_true", help="Build the Dear ImGui monitor locally")
+    parser.add_argument("--models", default="plan,build,vision", help="Comma-separated benchmark roles")
+    parser.add_argument("--contexts", default=",".join(map(str, CONTEXT_CANDIDATES)), help="Comma-separated token windows")
+    parser.add_argument("--repetitions", type=int, default=2)
+    parser.add_argument("--apply", action="store_true", help="Apply benchmark recommendations")
+    parser.add_argument("--yes", action="store_true", help="Apply without prompting")
+    parser.add_argument("--json", action="store_true", help="Print benchmark JSON")
     args = parser.parse_args()
     if args.refresh_config:
         runtime = refresh_config(args.build_monitor)
-        print(f"Lokale Codex-Konfiguration aktualisiert: {runtime['context_window']} Tokens Kontext")
+        print(tr("setup.config_updated", context=runtime["context_window"]))
         return
-    runtime = install(args.context, args.benchmark, args.build_monitor)
-    print(f"Lokaler Codex eingerichtet: {runtime['context_window']} Tokens Kontext")
+    if args.benchmark:
+        roles = tuple(item.strip() for item in args.models.split(",") if item.strip())
+        if not roles or any(role not in RAW_MODELS for role in roles):
+            parser.error("--models must contain plan, build and/or vision")
+        contexts = tuple(sorted({int(item.strip()) for item in args.contexts.split(",") if item.strip()}))
+        if not contexts or any(value not in CONTEXT_CANDIDATES for value in contexts):
+            parser.error("--contexts contains an unsupported context window")
+        if not 1 <= args.repetitions <= 10:
+            parser.error("--repetitions must be between 1 and 10")
+        run_benchmark_command(
+            roles=roles, contexts=contexts, repetitions=args.repetitions,
+            apply=args.apply, assume_yes=args.yes, json_output=args.json,
+        )
+        return
+    runtime = install(args.context, False, args.build_monitor)
+    print(tr("setup.installed", context=runtime["context_window"]))
 
 
 if __name__ == "__main__":
