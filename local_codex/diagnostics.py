@@ -9,6 +9,8 @@ from typing import Any, Callable, Iterable
 
 import httpx
 
+from .i18n import tr
+
 
 @dataclass(frozen=True)
 class DiagnosticCheck:
@@ -257,6 +259,6 @@ def run_preflight(
 def format_report(report: DiagnosticReport) -> str:
     lines = []
     for check in report.checks:
-        label = "OK" if check.ok else ("WARNUNG" if not check.required else "FEHLER")
+        label = tr("status.ok") if check.ok else (tr("status.warning") if not check.required else tr("status.error"))
         lines.append(f"[{label}] {check.name}: {check.detail}")
     return "\n".join(lines)

@@ -50,6 +50,7 @@ target_include_directories(localcodex_monitor_core PUBLIC src)
 target_link_libraries(localcodex_monitor_core PUBLIC nlohmann_json::nlohmann_json)
 
 add_executable(localcodex-monitor WIN32 src/main.cpp)
+target_sources(localcodex-monitor PRIVATE src/i18n.cpp)
 target_compile_definitions(localcodex-monitor PRIVATE
   CPPHTTPLIB_OPEN_TIMEOUT_SECOND=1
   CPPHTTPLIB_READ_TIMEOUT_SECOND=2

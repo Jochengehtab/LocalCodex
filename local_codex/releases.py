@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 
 from .settings import LOCAL_HOME, ROOT
+from .i18n import tr
 
 
 REPOSITORY = "Jochengehtab/LocalCodex"
@@ -78,7 +79,7 @@ def perform_update(version: str | None = None) -> int:
     info = None if version else latest_release(timeout=10.0)
     target = version or (info.version if info else None)
     if not target:
-        print("[local-codex] Kein stabiles GitHub-Release gefunden.", file=sys.stderr)
+        print(f"[local-codex] {tr('release.none')}", file=sys.stderr)
         return 1
     if os.environ.get("WSL_DISTRO_NAME") and shutil.which("powershell.exe"):
         script = subprocess.run(
@@ -99,7 +100,7 @@ def perform_update(version: str | None = None) -> int:
 def rollback() -> int:
     root_value = os.environ.get("LOCAL_CODEX_INSTALL_ROOT")
     if not root_value:
-        print("[local-codex] Rollback ist nur für eine Release-Installation verfügbar.", file=sys.stderr)
+        print(f"[local-codex] {tr('release.rollback_only')}", file=sys.stderr)
         return 1
     versions = Path(root_value) / "versions"
     candidates = sorted(
@@ -109,7 +110,7 @@ def rollback() -> int:
     )
     previous = next((value for value in candidates if _version_tuple(value) < _version_tuple(CURRENT_VERSION)), None)
     if not previous:
-        print("[local-codex] Keine ältere installierte Version gefunden.", file=sys.stderr)
+        print(f"[local-codex] {tr('release.no_previous')}", file=sys.stderr)
         return 1
     return perform_update(previous)
 
@@ -117,14 +118,14 @@ def rollback() -> int:
 def uninstall(*, purge_data: bool = False) -> int:
     root_value = os.environ.get("LOCAL_CODEX_INSTALL_ROOT")
     if not root_value:
-        print("[local-codex] Uninstall ist nur für eine Release-Installation verfügbar.", file=sys.stderr)
+        print(f"[local-codex] {tr('release.uninstall_only')}", file=sys.stderr)
         return 1
     root = Path(root_value).expanduser().resolve()
     if root in {Path.home(), Path("/"), Path.home().parent}:
-        print("[local-codex] Unsicheres Installationsziel; Abbruch.", file=sys.stderr)
+        print(f"[local-codex] {tr('release.unsafe_root')}", file=sys.stderr)
         return 1
     if sys.stdin.isatty():
-        answer = input(f"LocalCodex-Programme aus {root} entfernen? [j/N] ").strip().lower()
+        answer = input(tr("release.remove_prompt", root=root)).strip().lower()
         if answer not in {"j", "ja", "y", "yes"}:
             return 1
     for name in ("current", "previous"):
@@ -141,7 +142,8 @@ def uninstall(*, purge_data: bool = False) -> int:
             "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
             "Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'LocalCodex') -Recurse -Force -ErrorAction SilentlyContinue",
         ], check=False)
-    print("[local-codex] Programme entfernt." + (" Statistiken gelöscht." if purge_data else " Statistiken bleiben erhalten."))
+    suffix = tr("release.stats_removed") if purge_data else tr("release.stats_kept")
+    print(f"[local-codex] {tr('release.removed')} {suffix}")
     return 0
 
 
@@ -160,9 +162,9 @@ def maybe_prompt_for_update() -> bool:
         return False
     if state.get("ignored_version") == info.version:
         return False
-    print(f"[local-codex] Neue Version {info.version} verfügbar (installiert: {CURRENT_VERSION}).")
+    print(f"[local-codex] {tr('release.available', version=info.version, current=CURRENT_VERSION)}")
     try:
-        choice = input("Jetzt aktualisieren [j], diesmal überspringen [Enter], Version ignorieren [i]? ").strip().lower()
+        choice = input(tr("release.update_prompt")).strip().lower()
     except (EOFError, KeyboardInterrupt):
         return False
     if choice in {"i", "ignore"}:
@@ -172,7 +174,7 @@ def maybe_prompt_for_update() -> bool:
     if choice not in {"j", "ja", "y", "yes"}:
         return False
     if perform_update(info.version) == 0:
-        print("[local-codex] Update installiert. Bitte LocalCodex erneut starten.")
+        print(f"[local-codex] {tr('release.updated')}")
         return True
-    print("[local-codex] Update fehlgeschlagen; die aktive Version wurde nicht verändert.", file=sys.stderr)
+    print(f"[local-codex] {tr('release.failed')}", file=sys.stderr)
     return False

@@ -1,4 +1,5 @@
 #include "monitor_state.h"
+#include "i18n.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -91,6 +92,7 @@ struct Settings {
     int theme{};
     std::string period{"24h"};
     int refresh_ms{250};
+    std::string language;
 };
 
 std::filesystem::path settings_path() {
@@ -109,7 +111,10 @@ Settings load_settings() {
         result.theme = value.value("theme", 0);
         result.period = value.value("period", "24h");
         result.refresh_ms = std::clamp(value.value("refresh_ms", 250), 100, 2000);
+        result.language = value.value("language", "");
     } catch (...) {}
+    if (result.language.empty()) result.language = localcodex::i18n::language();
+    localcodex::i18n::set_language(result.language);
     return result;
 }
 
@@ -118,7 +123,7 @@ void save_settings(const Settings& value) {
         std::filesystem::create_directories(settings_path().parent_path());
         std::ofstream output(settings_path());
         output << nlohmann::json{{"theme", value.theme}, {"period", value.period},
-                                 {"refresh_ms", value.refresh_ms}}.dump(2) << '\n';
+                                 {"refresh_ms", value.refresh_ms}, {"language", value.language}}.dump(2) << '\n';
     } catch (...) {}
 }
 
@@ -164,7 +169,7 @@ public:
         http.set_connection_timeout(1, 0);
         http.set_read_timeout(2, 0);
         auto response = http.Get(path);
-        if (!response || response->status != 200) { result = "Export fehlgeschlagen"; return false; }
+        if (!response || response->status != 200) { result = localcodex::i18n::tr("export.failed"); return false; }
         try {
             auto dir = settings_path().parent_path() / "exports";
             std::filesystem::create_directories(dir);
@@ -173,7 +178,7 @@ public:
             output << response->body;
             result = file.string();
             return true;
-        } catch (...) { result = "Export konnte nicht geschrieben werden"; return false; }
+        } catch (...) { result = localcodex::i18n::tr("export.write_failed"); return false; }
     }
 
 private:
@@ -276,7 +281,7 @@ int run_monitor(int argc, char** argv) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-    SDL_Window* window = SDL_CreateWindow("Local Codex Monitor", 1120, 760,
+    SDL_Window* window = SDL_CreateWindow(localcodex::i18n::tr("monitor.title"), 1120, 760,
         SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!window) { SDL_Quit(); return 3; }
     SDL_GLContext gl = SDL_GL_CreateContext(window);
@@ -298,11 +303,11 @@ int run_monitor(int argc, char** argv) {
     bool quit = false;
     bool window_visible = true;
     TrayContext tray_context{window, &quit};
-    SDL_Tray* tray = SDL_CreateTray(nullptr, "Local Codex Monitor");
+    SDL_Tray* tray = SDL_CreateTray(nullptr, localcodex::i18n::tr("monitor.title"));
     if (tray) {
         auto* menu = SDL_CreateTrayMenu(tray);
-        auto* show = SDL_InsertTrayEntryAt(menu, -1, "Monitor anzeigen", SDL_TRAYENTRY_BUTTON);
-        auto* exit = SDL_InsertTrayEntryAt(menu, -1, "Beenden", SDL_TRAYENTRY_BUTTON);
+        auto* show = SDL_InsertTrayEntryAt(menu, -1, localcodex::i18n::tr("monitor.show"), SDL_TRAYENTRY_BUTTON);
+        auto* exit = SDL_InsertTrayEntryAt(menu, -1, localcodex::i18n::tr("monitor.quit"), SDL_TRAYENTRY_BUTTON);
         SDL_SetTrayEntryCallback(show, tray_show, &tray_context);
         SDL_SetTrayEntryCallback(exit, tray_quit, &tray_context);
     }
@@ -344,29 +349,29 @@ int run_monitor(int argc, char** argv) {
             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
 
         ImGui::SetWindowFontScale(1.35f);
-        ImGui::Text("Local Codex Monitor  %s", LOCALCODEX_VERSION);
+        ImGui::Text("%s  %s", localcodex::i18n::tr("monitor.title"), LOCALCODEX_VERSION);
         ImGui::SetWindowFontScale(1.0f);
         ImGui::SameLine(ImGui::GetWindowWidth() - 170);
         ImGui::TextColored(state.online ? ImVec4(0.25f, 0.85f, 0.65f, 1) : ImVec4(1, .35f, .35f, 1),
-                           state.online ? "Router online" : "Router offline");
-        if (ImGui::Button("Dashboard")) tab = 0;
-        ImGui::SameLine(); if (ImGui::Button("Historie")) tab = 1;
-        ImGui::SameLine(); if (ImGui::Button("Einstellungen")) tab = 2;
+                           "%s", state.online ? localcodex::i18n::tr("router.online") : localcodex::i18n::tr("router.offline"));
+        if (ImGui::Button(localcodex::i18n::tr("tab.dashboard"))) tab = 0;
+        ImGui::SameLine(); if (ImGui::Button(localcodex::i18n::tr("tab.history"))) tab = 1;
+        ImGui::SameLine(); if (ImGui::Button(localcodex::i18n::tr("tab.settings"))) tab = 2;
         ImGui::Separator();
 
         if (tab == 0) {
             ImGui::TextColored(ImVec4(.3f, .8f, 1, 1), "%s", state.phase.c_str());
             ImGui::SameLine(); ImGui::Text("%s", state.model.c_str());
             if (ImGui::BeginTable("cards", 4, ImGuiTableFlags_SizingStretchSame)) {
-                ImGui::TableNextColumn(); metric_card("SITZUNG INPUT", compact_number(state.session_input), "exakt von Ollama");
-                ImGui::TableNextColumn(); metric_card("SITZUNG OUTPUT", compact_number(state.session_output), state.active ? "inkl. Live-Schätzung" : "exakt von Ollama");
-                ImGui::TableNextColumn(); metric_card("GESCHWINDIGKEIT", std::to_string(state.tokens_per_second).substr(0, 5), "Tokens/s");
+                ImGui::TableNextColumn(); metric_card(localcodex::i18n::tr("metric.input"), compact_number(state.session_input), localcodex::i18n::tr("hint.ollama_exact"));
+                ImGui::TableNextColumn(); metric_card(localcodex::i18n::tr("metric.output"), compact_number(state.session_output), state.active ? localcodex::i18n::tr("hint.live_estimate") : localcodex::i18n::tr("hint.ollama_exact"));
+                ImGui::TableNextColumn(); metric_card(localcodex::i18n::tr("metric.speed"), std::to_string(state.tokens_per_second).substr(0, 5), localcodex::i18n::tr("hint.tokens_second"));
                 std::ostringstream saved; saved << '$' << std::fixed << std::setprecision(6) << state.session_saved_usd;
-                ImGui::TableNextColumn(); metric_card("GESPART / SITZUNG", saved.str(), "API-Vergleich");
+                ImGui::TableNextColumn(); metric_card(localcodex::i18n::tr("metric.saved"), saved.str(), localcodex::i18n::tr("hint.api_comparison"));
                 ImGui::EndTable();
             }
             ImGui::BeginChild("throughput", ImVec2(ImGui::GetContentRegionAvail().x * .62f, 300), ImGuiChildFlags_Borders);
-            ImGui::Text("Live Throughput");
+            ImGui::TextUnformatted(localcodex::i18n::tr("throughput.title"));
             auto samples = client.samples();
             if (ImPlot::BeginPlot("##throughput_plot", ImVec2(-1, -1))) {
                 ImPlot::SetupAxes(nullptr, "Tokens/s", ImPlotAxisFlags_NoTickLabels, ImPlotAxisFlags_AutoFit);
@@ -376,11 +381,12 @@ int run_monitor(int argc, char** argv) {
             ImGui::EndChild();
             ImGui::SameLine();
             ImGui::BeginChild("runtime", ImVec2(0, 300), ImGuiChildFlags_Borders);
-            ImGui::Text("Ollama Runtime");
+            ImGui::TextUnformatted(localcodex::i18n::tr("runtime.title"));
             ImGui::Separator();
             ImGui::TextWrapped("%s", state.runtime_name.empty() ? state.model.c_str() : state.runtime_name.c_str());
             ImGui::TextDisabled("%s  %s", state.parameter_size.c_str(), state.quantization.c_str());
-            ImGui::Text("Kontext: %s", compact_number(state.context_length).c_str());
+            const char* context_format = localcodex::i18n::tr("runtime.context");
+            ImGui::Text(context_format, compact_number(state.context_length).c_str());
             ImGui::Text("Ollama: %s", state.ollama_version.c_str());
             ImGui::Text("TTFT: %.2f s", state.ttft_seconds);
             ImGui::Text("Laufzeit: %.1f s", state.elapsed_seconds);
@@ -393,16 +399,16 @@ int run_monitor(int argc, char** argv) {
                 }
                 ImGui::SameLine();
             }
-            if (ImGui::Button("Alle Sitzungen")) client.select_session("");
-            ImGui::SameLine(); if (ImGui::Button("CSV exportieren")) client.export_usage("csv", export_status);
-            ImGui::SameLine(); if (ImGui::Button("JSON exportieren")) client.export_usage("json", export_status);
+            if (ImGui::Button(localcodex::i18n::tr("history.all_sessions"))) client.select_session("");
+            ImGui::SameLine(); if (ImGui::Button(localcodex::i18n::tr("history.csv"))) client.export_usage("csv", export_status);
+            ImGui::SameLine(); if (ImGui::Button(localcodex::i18n::tr("history.json"))) client.export_usage("json", export_status);
             if (!export_status.empty()) ImGui::TextDisabled("%s", export_status.c_str());
-            ImGui::Text("Zeitraum: %s Input / %s Output / $%.6f gespart",
+            ImGui::Text(localcodex::i18n::tr("history.range"),
                 compact_number(state.period_input).c_str(), compact_number(state.period_output).c_str(), state.period_saved_usd);
             if (ImGui::BeginTable("sessions", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
-                ImGui::TableSetupColumn("Sitzung"); ImGui::TableSetupColumn("Turns");
-                ImGui::TableSetupColumn("Input"); ImGui::TableSetupColumn("Output");
-                ImGui::TableSetupColumn("Gespart"); ImGui::TableSetupColumn("Filter");
+                ImGui::TableSetupColumn(localcodex::i18n::tr("history.session")); ImGui::TableSetupColumn(localcodex::i18n::tr("history.turns"));
+                ImGui::TableSetupColumn(localcodex::i18n::tr("history.input")); ImGui::TableSetupColumn(localcodex::i18n::tr("history.output"));
+                ImGui::TableSetupColumn(localcodex::i18n::tr("history.saved")); ImGui::TableSetupColumn(localcodex::i18n::tr("history.filter"));
                 ImGui::TableHeadersRow();
                 for (const auto& row : state.sessions) {
                     ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextUnformatted(row.title.c_str());
@@ -412,21 +418,28 @@ int run_monitor(int argc, char** argv) {
                     ImGui::TableNextColumn(); ImGui::Text("$%.6f", row.saved_usd);
                     ImGui::TableNextColumn();
                     ImGui::PushID(row.id.c_str());
-                    if (ImGui::SmallButton("Auswählen")) client.select_session(row.id);
+                    if (ImGui::SmallButton(localcodex::i18n::tr("history.select"))) client.select_session(row.id);
                     ImGui::PopID();
                 }
                 ImGui::EndTable();
             }
         } else {
-            ImGui::Text("Darstellung");
-            const char* themes[] = {"System", "Dunkel", "Hell"};
-            if (ImGui::Combo("Theme", &settings.theme, themes, 3)) { apply_theme(settings.theme); save_settings(settings); }
-            if (ImGui::SliderInt("Live-Aktualisierung (ms)", &settings.refresh_ms, 100, 2000)) {
+            ImGui::TextUnformatted(localcodex::i18n::tr("settings.appearance"));
+            const char* themes[] = {localcodex::i18n::tr("settings.system"), localcodex::i18n::tr("settings.dark"), localcodex::i18n::tr("settings.light")};
+            if (ImGui::Combo(localcodex::i18n::tr("settings.theme"), &settings.theme, themes, 3)) { apply_theme(settings.theme); save_settings(settings); }
+            const char* languages[] = {localcodex::i18n::tr("settings.german"), localcodex::i18n::tr("settings.english")};
+            int language_index = localcodex::i18n::language() == "en" ? 1 : 0;
+            if (ImGui::Combo(localcodex::i18n::tr("settings.language"), &language_index, languages, 2)) {
+                settings.language = language_index == 1 ? "en" : "de";
+                localcodex::i18n::set_language(settings.language);
+                save_settings(settings);
+            }
+            if (ImGui::SliderInt(localcodex::i18n::tr("settings.refresh"), &settings.refresh_ms, 100, 2000)) {
                 client.set_refresh_ms(settings.refresh_ms);
                 save_settings(settings);
             }
             ImGui::Separator();
-            ImGui::TextWrapped("Der Monitor liest ausschließlich lokale Router-Metriken. Er startet keine zweite Modellanfrage und speichert keine Denkzusammenfassungen.");
+            ImGui::TextWrapped("%s", localcodex::i18n::tr("settings.description"));
             ImGui::Text("Router: http://%s:%d", host.c_str(), port);
             ImGui::Text("Version: %s", LOCALCODEX_VERSION);
         }

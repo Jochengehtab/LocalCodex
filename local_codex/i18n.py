@@ -1,0 +1,78 @@
+"""Small, dependency-free localization layer shared by the Python entry points.
+
+The language can be selected with ``LOCAL_CODEX_LANGUAGE=de|en``.  Locale
+environment variables are used as a fallback, while German remains the
+default to preserve the existing CLI behaviour.
+"""
+from __future__ import annotations
+
+import os
+from typing import Final
+
+SUPPORTED_LANGUAGES: Final = ("de", "en")
+
+_MESSAGES: Final[dict[str, dict[str, str]]] = {
+    "de": {
+        "release.none": "Kein stabiles GitHub-Release gefunden.",
+        "release.rollback_only": "Rollback ist nur für eine Release-Installation verfügbar.",
+        "release.no_previous": "Keine ältere installierte Version gefunden.",
+        "release.uninstall_only": "Uninstall ist nur für eine Release-Installation verfügbar.",
+        "release.unsafe_root": "Unsicheres Installationsziel; Abbruch.",
+        "release.remove_prompt": "LocalCodex-Programme aus {root} entfernen? [j/N] ",
+        "release.removed": "Programme entfernt.",
+        "release.stats_removed": "Statistiken gelöscht.",
+        "release.stats_kept": "Statistiken bleiben erhalten.",
+        "release.available": "Neue Version {version} verfügbar (installiert: {current}).",
+        "release.update_prompt": "Jetzt aktualisieren [j], diesmal überspringen [Enter], Version ignorieren [i]? ",
+        "release.updated": "Update installiert. Bitte LocalCodex erneut starten.",
+        "release.failed": "Update fehlgeschlagen; die aktive Version wurde nicht verändert.",
+        "status.ok": "OK",
+        "status.warning": "WARNUNG",
+        "status.error": "FEHLER",
+    },
+    "en": {
+        "release.none": "No stable GitHub release found.",
+        "release.rollback_only": "Rollback is only available for a release installation.",
+        "release.no_previous": "No older installed version found.",
+        "release.uninstall_only": "Uninstall is only available for a release installation.",
+        "release.unsafe_root": "Unsafe installation target; aborting.",
+        "release.remove_prompt": "Remove LocalCodex programs from {root}? [y/N] ",
+        "release.removed": "Programs removed.",
+        "release.stats_removed": "Statistics deleted.",
+        "release.stats_kept": "Statistics were kept.",
+        "release.available": "New version {version} available (installed: {current}).",
+        "release.update_prompt": "Update now [y], skip this time [Enter], ignore version [i]? ",
+        "release.updated": "Update installed. Please restart LocalCodex.",
+        "release.failed": "Update failed; the active version was not changed.",
+        "status.ok": "OK",
+        "status.warning": "WARNING",
+        "status.error": "ERROR",
+    },
+}
+
+
+def _detect_language() -> str:
+    requested = os.environ.get("LOCAL_CODEX_LANGUAGE", "").strip().lower().replace("_", "-")
+    if requested:
+        return "en" if requested.startswith("en") else "de"
+    locale = os.environ.get("LC_ALL") or os.environ.get("LANG") or "de"
+    return "en" if locale.lower().startswith("en") else "de"
+
+
+_language = _detect_language()
+
+
+def get_language() -> str:
+    return _language
+
+
+def set_language(value: str) -> str:
+    """Set and return a supported language; unknown values fall back to German."""
+    global _language
+    _language = "en" if value.lower().startswith("en") else "de"
+    return _language
+
+
+def tr(key: str, **values: object) -> str:
+    message = _MESSAGES.get(_language, {}).get(key) or _MESSAGES["de"].get(key) or key
+    return message.format(**values)

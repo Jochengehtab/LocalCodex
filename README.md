@@ -18,6 +18,9 @@ nativen Dear-ImGui-Monitor.
 - Native Windows-x64- und Linux-x64-Oberfläche mit SDL3, Dear ImGui und ImPlot.
 - Automatisches Entladen ausschließlich der LocalCodex-Ollama-Aliase nach der letzten Sitzung.
 - SemVer-Releases, SHA-256-Prüfung, atomare Updates und Rollback.
+- Vollständige Deutsch-/Englisch-Lokalisierung per `LOCAL_CODEX_LANGUAGE=de|en` oder im
+  Monitor unter Einstellungen → Sprache. Unbekannte Locale-Werte fallen sicher auf Deutsch
+  zurück.
 
 ## Installation
 
@@ -46,6 +49,12 @@ Danach sollte `~/.local/bin` im `PATH` liegen:
 
 ```bash
 codex-local
+```
+
+Die Sprache lässt sich ohne Neuinstallation umschalten:
+
+```bash
+LOCAL_CODEX_LANGUAGE=en codex-local
 ```
 
 Nützliche Verwaltungsbefehle:

@@ -94,6 +94,12 @@ reservierte und Link-Local-Ziele, prüft Redirects neu und begrenzt Download, La
 Textausgabe. Webinhalte werden als nicht vertrauenswürdige Daten gekennzeichnet. PDFs und
 JavaScript-only-Seiten werden in der ersten Version nicht extrahiert.
 
+## Sprache
+
+CLI- und Monitortexte unterstützen Deutsch und Englisch. Setze vor dem Start
+`LOCAL_CODEX_LANGUAGE=de` oder `LOCAL_CODEX_LANGUAGE=en`; im nativen Monitor kann die Sprache
+zusätzlich unter **Einstellungen → Sprache** geändert werden. Die Auswahl wird lokal gespeichert.
+
 ## Modellrouting
 
 | Anfrage | Ollama-Alias | Ausgangsmodell |
