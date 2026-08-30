@@ -1,0 +1,6 @@
+# Keep POSIX installer scripts executable-compatible and avoid CRLF shebangs.
+*.sh text eol=lf
+*.py text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.ps1 text eol=crlf

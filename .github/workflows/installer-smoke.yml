@@ -17,15 +17,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: bash -n install.sh
+      # GitHub/Windows-created commits can normalize the executable bit.
+      # The installer is intentionally runnable through bash on every POSIX host.
+      - run: chmod +x install.sh
       - run: test -x install.sh
-      - run: ./install.sh --dry-run --version "$(cat VERSION)" --yes
+      - run: bash ./install.sh --dry-run --version "$(cat VERSION)" --yes
       - name: Isolated payload installation
         env:
           LOCAL_CODEX_INSTALL_ROOT: ${{ runner.temp }}/localcodex
           LOCAL_CODEX_HOME: ${{ runner.temp }}/localcodex/data
           LOCAL_CODEX_BIN_DIR: ${{ runner.temp }}/bin
         run: |
-          ./install.sh --version "$(cat VERSION)" --yes --skip-setup --skip-models --skip-search
+          bash ./install.sh --version "$(cat VERSION)" --yes --skip-setup --skip-models --skip-search
           test -L "$LOCAL_CODEX_INSTALL_ROOT/current"
           test -x "$LOCAL_CODEX_INSTALL_ROOT/current/.venv/bin/python"
           cd "$LOCAL_CODEX_INSTALL_ROOT/current"

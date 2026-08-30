@@ -35,7 +35,7 @@ jobs:
       - run: python -m unittest discover -s tests -v
         env:
           LOCAL_CODEX_LIVE_TESTS: "0"
-      - run: bash -n install.sh && ./install.sh --dry-run --version "${{ needs.validate.outputs.version }}" --yes
+      - run: bash -n install.sh && chmod +x install.sh && bash ./install.sh --dry-run --version "${{ needs.validate.outputs.version }}" --yes
       - run: |
           tar --exclude=.git --exclude=.github --exclude=.venv --exclude=.codex-local --exclude=build \
             -czf "localcodex-core-v${{ needs.validate.outputs.version }}.tar.gz" .

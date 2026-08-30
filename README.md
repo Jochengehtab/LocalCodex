@@ -1,5 +1,7 @@
 # LocalCodex
 
+**English:** [README.en.md](README.en.md) · **Deutsch:** Diese Seite
+
 LocalCodex verbindet die echte OpenAI Codex CLI vollständig lokal mit Ollama. Ein lokaler
 Responses-Router wählt automatisch zwischen Qwen-Planungs-, Coding- und Vision-Modellen, stellt
 eine private SearXNG-Websuche bereit und liefert exakte Sitzungs- und Langzeitstatistiken an einen
@@ -114,3 +116,6 @@ nur validierte `vX.Y.Z`-Tags als GitHub Release. Release-Assets enthalten keine 
 
 Weitere Details zu Routing, Websuche, Kontextbenchmark und Diagnose stehen in
 [README.local-codex.md](README.local-codex.md).
+
+Beitrags- und Agentenregeln stehen in [AGENTS.md](AGENTS.md); die englische Dokumentation ist
+[README.en.md](README.en.md).
