@@ -74,8 +74,9 @@ jobs:
           LOCAL_CODEX_LIVE_TESTS: "0"
       - run: bash -n install.sh && chmod +x install.sh && bash ./install.sh --dry-run --version "${{ needs.prepare.outputs.version }}" --yes
       - run: |
-          tar --exclude=.git --exclude=.github --exclude=.venv --exclude=.codex-local --exclude=build \
-            -czf "localcodex-core-v${{ needs.prepare.outputs.version }}.tar.gz" .
+          archive="localcodex-core-v${{ needs.prepare.outputs.version }}.tar.gz"
+          git archive --format=tar.gz --output="$RUNNER_TEMP/$archive" HEAD
+          cp "$RUNNER_TEMP/$archive" "$archive"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: core
