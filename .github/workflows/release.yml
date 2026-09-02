@@ -142,6 +142,8 @@ jobs:
         run: |
           tag="v${{ needs.prepare.outputs.version }}"
           sha="${{ needs.prepare.outputs.sha }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if ! git rev-parse "$tag" >/dev/null 2>&1; then
             git tag -a "$tag" "$sha" -m "LocalCodex $tag"
             git push origin "$tag"
