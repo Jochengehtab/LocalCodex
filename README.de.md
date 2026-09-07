@@ -12,7 +12,8 @@ Aufgabe, Modellverwaltung und einen nativen Monitor. Siehe [Vergleich und Kompat
 Unabhängiges Community-Projekt unter [AGPL-3.0-only](LICENSE).
 
 **Einstieg:** [Modellkonfiguration](examples/localcodex.toml) · [Architektur](docs/architecture.md) ·
-[Mitwirken](CONTRIBUTING.md) · [Benchmark-Ablauf](examples/benchmarks/README.md).
+[Mitwirken](CONTRIBUTING.md) · [Benchmark-Ablauf](examples/benchmarks/README.md) ·
+[echter lokaler Prüflauf](docs/verification.md).
 Hardwaremessungen und eine echte Demo-Aufnahme stehen noch aus; bessere Qualität oder Geschwindigkeit wird nicht behauptet.
 
 > Die Bedienung entspricht dem Codex-Workflow, die Modellqualität ist jedoch von den lokal

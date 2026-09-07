@@ -13,7 +13,9 @@ This is an independent community project, licensed under [AGPL-3.0-only](LICENSE
 
 **Start here:** [model configuration](examples/localcodex.toml) · [architecture](docs/architecture.md) ·
 [contributing](CONTRIBUTING.md) · [benchmark protocol](examples/benchmarks/README.md).
-Hardware measurements and a real demo recording are pending; no quality or speed advantage is claimed.
+A [real local verification run](docs/verification.md) covers Codex/Ollama inference and a
+three-role smoke benchmark. A public video and the full comparative benchmark are pending;
+no quality or speed advantage is claimed.
 
 > The workflow follows Codex, but model quality depends on the installed local Qwen models and
 > available hardware.
