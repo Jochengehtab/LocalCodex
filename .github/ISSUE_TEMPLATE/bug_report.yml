@@ -1,0 +1,22 @@
+name: Bug report
+description: Report a reproducible LocalCodex problem
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, LocalCodex/Codex/Ollama versions, model names, RAM/VRAM; omit private paths.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction and expected behavior
+      description: Minimal public example, actual behavior and expected result.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Never attach credentials, runtime databases, private code or reasoning content.

@@ -8,8 +8,11 @@ slow down a turn.
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
+from collections import deque
+from collections.abc import Callable
 from typing import Any
 
 from .usage import TokenUsage, estimate_cost
@@ -18,22 +21,34 @@ from .usage import TokenUsage, estimate_cost
 class TelemetryHub:
     """Thread-safe, bounded status for exactly one serialized local inference."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        wall_clock: Callable[[], float] = time.time,
+        monotonic_clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._wall_clock = wall_clock
+        self._monotonic_clock = monotonic_clock
         self._lock = threading.Lock()
         self._state: dict[str, Any] = self._idle_state()
         self._revision = 0
+        self._rate_samples: deque[tuple[float, int]] = deque()
 
     def _touch_locked(self) -> None:
         self._revision += 1
-        self._state["updated_at"] = time.time()
+        self._state["updated_at"] = self._wall_clock()
 
     @property
     def revision(self) -> int:
         with self._lock:
             return self._revision
 
-    @staticmethod
-    def _idle_state() -> dict[str, Any]:
+    @property
+    def active(self) -> bool:
+        with self._lock:
+            return bool(self._state.get("active"))
+
+    def _idle_state(self) -> dict[str, Any]:
         return {
             "active": False,
             "phase": "idle",
@@ -42,13 +57,18 @@ class TelemetryHub:
             "session_id": None,
             "started_at": None,
             "generation_started_at": None,
-            "updated_at": time.time(),
+            "updated_at": self._wall_clock(),
             "estimated_output_tokens": 0,
             "estimated_visible_tokens": 0,
+            "visible_output_characters": 0,
             "input_tokens": None,
             "output_tokens": None,
             "tokens_per_second": None,
+            "average_tokens_per_second": None,
             "tokens_per_second_estimated": False,
+            "mode": None,
+            "source_model": None,
+            "route_reason": None,
             "last_tool": None,
             "comparison_cost_usd": None,
             "comparison_model": None,
@@ -68,13 +88,17 @@ class TelemetryHub:
         session_statistics: dict[str, Any] | None = None,
         input_tokens_estimate: int | None = None,
         comparison_model: str | None = None,
+        mode: str | None = None,
+        source_model: str | None = None,
+        route_reason: str | None = None,
     ) -> None:
-        now = time.time()
+        now = self._wall_clock()
         with self._lock:
             runtime = self._state.get("ollama_runtime", {})
             version = self._state.get("ollama_version")
             all_statistics = self._state.get("all_statistics", {})
             self._state = self._idle_state()
+            self._rate_samples.clear()
             self._state.update(
                 active=True,
                 phase="loading",
@@ -89,6 +113,9 @@ class TelemetryHub:
                 all_statistics=all_statistics,
                 input_tokens=input_tokens_estimate,
                 comparison_model=comparison_model,
+                mode=mode,
+                source_model=source_model,
+                route_reason=route_reason,
             )
             self._touch_locked()
 
@@ -114,13 +141,29 @@ class TelemetryHub:
         if not text:
             return
         with self._lock:
-            now = time.time()
+            now = self._wall_clock()
+            monotonic_now = self._monotonic_clock()
             self._state["phase"] = "generating"
-            # A dependency-free, intentionally labelled estimate for the live UI.
-            estimate = max(1, len(text) // 4)
-            self._state["estimated_output_tokens"] += estimate
-            self._state["estimated_visible_tokens"] += estimate
+            self._state["visible_output_characters"] += len(text)
+            # Estimate from the complete stream so tiny deltas do not each
+            # round up to a full token.
+            estimate = math.ceil(self._state["visible_output_characters"] / 4)
+            self._state["estimated_output_tokens"] = estimate
+            self._state["estimated_visible_tokens"] = estimate
             self._state["generation_started_at"] = self._state["generation_started_at"] or now
+            self._rate_samples.append((monotonic_now, estimate))
+            cutoff = monotonic_now - 2.0
+            while len(self._rate_samples) > 1 and self._rate_samples[1][0] <= cutoff:
+                self._rate_samples.popleft()
+            oldest_time, oldest_tokens = self._rate_samples[0]
+            elapsed = monotonic_now - oldest_time
+            if elapsed > 0:
+                self._state["tokens_per_second"] = round(
+                    max(0, estimate - oldest_tokens) / elapsed, 3
+                )
+            generation_elapsed = max(now - self._state["generation_started_at"], 0.001)
+            self._state["average_tokens_per_second"] = round(estimate / generation_elapsed, 3)
+            self._state["tokens_per_second_estimated"] = True
             self._touch_locked()
 
     def update_ollama_runtime(self, payload: dict[str, Any], version: str | None = None) -> None:
@@ -160,7 +203,7 @@ class TelemetryHub:
         comparison_model: str,
         native_timing: dict[str, Any] | None = None,
     ) -> None:
-        now = time.time()
+        now = self._wall_clock()
         with self._lock:
             started = self._state.get("started_at") or now
             generation_started = self._state.get("generation_started_at") or started
@@ -185,6 +228,7 @@ class TelemetryHub:
                 output_tokens=usage.output_tokens,
                 estimated_output_tokens=usage.output_tokens or self._state["estimated_output_tokens"],
                 tokens_per_second=round(tokens_per_second, 3),
+                average_tokens_per_second=round(tokens_per_second, 3),
                 tokens_per_second_estimated=False,
                 metric_source=source,
                 comparison_cost_usd=round(comparison_cost_usd, 8),
@@ -195,22 +239,16 @@ class TelemetryHub:
 
     def fail(self, message: str) -> None:
         with self._lock:
-            self._state.update(active=False, phase="error", error=message[:300], updated_at=time.time())
+            self._state.update(active=False, phase="error", error=message[:300], updated_at=self._wall_clock())
             self._touch_locked()
 
     def snapshot(self) -> dict[str, Any]:
-        now = time.time()
+        now = self._wall_clock()
         with self._lock:
             value = dict(self._state)
             revision = self._revision
         started = value.get("started_at")
         value["elapsed_seconds"] = round(max(now - float(started), 0.0), 3) if started else 0.0
-        if value["active"] and value["estimated_output_tokens"]:
-            generation_started = value.get("generation_started_at") or started or now
-            value["tokens_per_second"] = round(
-                value["estimated_output_tokens"] / max(now - float(generation_started), 0.001), 3
-            )
-            value["tokens_per_second_estimated"] = True
         first_token = value.get("generation_started_at")
         value["time_to_first_token_seconds"] = (
             round(max(float(first_token) - float(started), 0.0), 3)
@@ -230,8 +268,9 @@ class TelemetryHub:
         session_statistics = value.get("session_statistics", {})
         all_statistics = value.get("all_statistics", {})
         return {
-            "schema_version": 4,
+            "schema_version": 5,
             "sequence": revision,
+            "sampled_at": now,
             "active": value["active"],
             "phase": value["phase"],
             "model": value["model"],
@@ -251,10 +290,16 @@ class TelemetryHub:
             "error": value["error"],
             "turn": {
                 "active": value["active"], "phase": value["phase"], "model": value["model"],
-                "role": (
+                "mode": value.get("mode") or (
                     "vision" if "vision" in str(value["model"]) else
                     "plan" if "plan" in str(value["model"]) else "build"
                 ),
+                "role": value.get("mode") or (
+                    "vision" if "vision" in str(value["model"]) else
+                    "plan" if "plan" in str(value["model"]) else "build"
+                ),
+                "source_model": value.get("source_model"),
+                "route_reason": value.get("route_reason"),
                 "turn_id": value["turn_id"], "session_id": value["session_id"],
                 "elapsed_seconds": value["elapsed_seconds"], "last_tool": value["last_tool"],
                 "error": value["error"],
@@ -268,6 +313,7 @@ class TelemetryHub:
             },
             "performance": {
                 "tokens_per_second": value["tokens_per_second"],
+                "average_tokens_per_second": value["average_tokens_per_second"],
                 "estimated": value["tokens_per_second_estimated"],
                 "time_to_first_token_seconds": value["time_to_first_token_seconds"],
                 "source": value["metric_source"],

@@ -3,12 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+from .config import load_model_config
 
 
 ROOT = Path(__file__).resolve().parent.parent
 LOCAL_HOME = Path(os.environ.get("LOCAL_CODEX_HOME", ROOT / ".codex-local")).expanduser().resolve()
 STATE_DIR = LOCAL_HOME / "state"
 MODELS_DIR = LOCAL_HOME / "models"
+
+MODEL_CONFIG = load_model_config(LOCAL_HOME / "localcodex.toml")
+SOURCE_MODELS = {role: profile.source for role, profile in MODEL_CONFIG.profiles().items()}
 
 
 LOCAL_INSTRUCTIONS = """You are a local coding agent running inside the Codex CLI.
@@ -58,6 +62,8 @@ class RuntimeSettings:
     request_timeout_seconds: float = 900.0
     state_ttl_seconds: int = 7 * 24 * 60 * 60
     state_max_rows: int = 512
+    max_pending_requests: int = 8
+    max_response_bytes: int = 32 * 1024 * 1024
 
 
 SETTINGS = RuntimeSettings()

@@ -2,9 +2,18 @@
 
 **English:** This page · **Deutsch:** [README.de.md](README.de.md)
 
-LocalCodex connects the real OpenAI Codex CLI to Ollama locally. A local Responses router selects
-Qwen planning, coding, and vision models, provides private SearXNG web search, and exposes exact
+LocalCodex automatically routes planning, coding, image input and tool-error recovery to local
+Ollama models while keeping the OpenAI Codex CLI workflow. Its Responses router manages model
+aliases, offers optional SearXNG web search, and exposes
 session and historical usage statistics through a native Dear ImGui monitor.
+
+Codex already supports Ollama directly. LocalCodex adds automatic role-based model switching,
+managed model lifecycles and a native monitor. See the [comparison and compatibility limits](docs/compatibility.md).
+This is an independent community project, licensed under [AGPL-3.0-only](LICENSE).
+
+**Start here:** [model configuration](examples/localcodex.toml) · [architecture](docs/architecture.md) ·
+[contributing](CONTRIBUTING.md) · [benchmark protocol](examples/benchmarks/README.md).
+Hardware measurements and a real demo recording are pending; no quality or speed advantage is claimed.
 
 > The workflow follows Codex, but model quality depends on the installed local Qwen models and
 > available hardware.
@@ -13,8 +22,8 @@ session and historical usage statistics through a native Dear ImGui monitor.
 
 - Local-only provider on `127.0.0.1`; cloud model overrides are blocked.
 - Automatic routing between `qwen3.8:27b`, `qwen3.6:35b-a3b`, and `qwen3-vl:30b`.
-- New turns use the maximum `xhigh` reasoning level; raw reasoning summaries are never stored.
-- Free current web search through a local SearXNG container.
+- Model sources, context and reasoning settings are configurable per role; reasoning summaries are never stored.
+- Optional web search through local SearXNG; queries still reach external search engines.
 - Exact Ollama usage per Codex thread plus 24h/7d/30d/all-time statistics.
 - Native Windows x64 and Linux x64 monitor built with SDL3, Dear ImGui, and ImPlot.
 - Only LocalCodex Ollama aliases are unloaded after the final session; unrelated models stay loaded.
@@ -75,9 +84,16 @@ API endpoints:
 - `GET /monitor/statistics/export` — CSV/JSON raw data.
 
 The dashboard uses a persistent local SSE stream for live updates and falls back to low-frequency
-polling when necessary. It shows turn, session, and all-time tokens and savings, TTFT, throughput,
-context utilization, model role, Ollama RAM/VRAM, phase, and the latest tool. The throughput graph
-automatically scales over the complete session while retaining peaks in a bounded buffer.
+polling when necessary. It shows turn, session, and all-time tokens and savings, TTFT, current and
+average throughput, context utilization, Codex mode and phase, the routed alias, source model, and
+the latest tool. The throughput graph has last-120-seconds, current-turn, and full-session views;
+both axes scale to the selected range and peak-preserving compaction keeps the buffer bounded.
+
+CPU and RAM usage come from native operating-system APIs. GPU load and global VRAM usage use NVML
+when available, with Windows PDH/DXGI and Linux DRM sysfs as best-effort fallbacks. A separate model
+allocation line continues to use Ollama's `/api/ps` values. Unsupported metrics are shown as
+`Not available` instead of starting helper processes. Resource sampling runs once per second while
+the window is visible and once every five seconds while hidden.
 
 ## Context benchmark
 

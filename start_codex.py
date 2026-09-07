@@ -476,9 +476,11 @@ def ensure_setup(
     benchmark: bool = False,
     context_arguments: list[str] | None = None,
     build_monitor: bool = False,
+    refresh_config: bool = False,
 ) -> None:
     config_version = 0
     monitor_missing = True
+    runtime = {}
     try:
         import json
 
@@ -488,9 +490,19 @@ def ensure_setup(
         monitor_executable = monitor.get("wsl_executable") if isinstance(monitor, dict) else None
         monitor_missing = not isinstance(monitor_executable, str) or not Path(monitor_executable).exists()
     except (OSError, ValueError, KeyError, TypeError):
-        pass
-    if context_arguments or benchmark or build_monitor or not (LOCAL_HOME / "config.toml").exists():
+        runtime = {}
+    from dataclasses import asdict
+    from local_codex.config import load_model_config
+
+    profiles_changed = False
+    if (LOCAL_HOME / "localcodex.toml").is_file() or runtime.get("model_profiles") is not None:
+        profiles_changed = runtime.get("model_profiles") != asdict(
+            load_model_config(LOCAL_HOME / "localcodex.toml")
+        )
+    if profiles_changed or refresh_config or context_arguments or benchmark or build_monitor or not (LOCAL_HOME / "config.toml").exists():
         command = [str(PYTHON), "-m", "local_codex.setup"]
+        if refresh_config and not profiles_changed:
+            command.append("--refresh-config")
         if benchmark:
             command.append("--benchmark")
         if context_arguments:
@@ -510,55 +522,15 @@ def main() -> int:
     arguments = map_cli_paths(sys.argv[1:])
     monitor_enabled = "--no-monitor" not in arguments
     arguments = [argument for argument in arguments if argument != "--no-monitor"]
-    if arguments and arguments[0] == "update":
-        from local_codex.releases import perform_update
-
-        version = arguments[1] if len(arguments) > 1 else None
-        return perform_update(version)
-    if arguments and arguments[0] == "rollback":
-        from local_codex.releases import rollback
-
-        return rollback()
-    if arguments and arguments[0] == "uninstall":
-        from local_codex.releases import uninstall
-
-        return uninstall(purge_data="--purge-data" in arguments[1:])
-    if arguments and arguments[0] == "benchmark":
-        return subprocess.run(
-            [str(PYTHON), "-m", "local_codex.setup", "--benchmark", *arguments[1:]],
-            cwd=ROOT, check=False,
-        ).returncode
-    if arguments and arguments[0] in {"--setup", "setup"}:
-        ensure_setup(
-            benchmark="--benchmark" in arguments[1:],
-            context_arguments=setup_context_arguments(arguments[1:]),
-            build_monitor="--build-monitor" in arguments[1:],
-        )
-        start_search()
-        return 0
-    if arguments and arguments[0] == "--search-doctor":
-        ensure_setup()
-        return search_doctor()
-    if arguments and arguments[0] == "--monitor-doctor":
-        return monitor_doctor()
-    if arguments and arguments[0] in {"--doctor", "doctor"}:
-        return local_doctor("--json" in arguments[1:])
-    if arguments and arguments[0] in {"--self-test", "self-test"}:
-        return local_self_test("--json" in arguments[1:])
-    if arguments and arguments[0] in {"--usage", "usage", "--usage-json"}:
-        ensure_setup()
-        from local_codex.usage import UsageStore, format_summary
-
-        store = UsageStore(LOCAL_HOME / "state" / "usage.sqlite3")
-        summary = store.summary(None if "--all" in arguments[1:] else 30)
-        store.close()
-        if arguments[0] == "--usage-json":
-            import json
-
-            print(json.dumps(summary, ensure_ascii=False, indent=2))
-        else:
-            print(format_summary(summary))
-        return 0
+    from local_codex.commands import LauncherCommands, dispatch
+    result = dispatch(arguments, LauncherCommands(
+        root=ROOT, python=PYTHON, home=LOCAL_HOME, setup=ensure_setup,
+        context_arguments=setup_context_arguments, start_search=start_search,
+        search_doctor=search_doctor, monitor_doctor=monitor_doctor,
+        doctor=local_doctor, self_test=local_self_test,
+    ))
+    if result is not None:
+        return result
     option_boundary = arguments.index("--") if "--" in arguments else len(arguments)
     force = "--force" in arguments[:option_boundary]
     try:
@@ -633,7 +605,7 @@ def main() -> int:
                 proxy.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proxy.kill()
-    from local_codex.usage import UsageStore, format_summary
+    from local_codex.usage import UsageStore
 
     store = UsageStore(LOCAL_HOME / "state" / "usage.sqlite3")
     summary = store.summary(1)

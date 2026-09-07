@@ -18,8 +18,14 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-local-codex.txt
-      - run: python -m pip install -r requirements-local-codex.txt
+          cache-dependency-path: |
+            requirements-local-codex.txt
+            constraints-runtime.txt
+            requirements-dev.txt
+      - run: python -m pip install -r requirements-local-codex.txt -r requirements-dev.txt
+      - run: python -m pip check
+      - run: python -m ruff check .
+      - run: python -m mypy
       - run: python -m compileall -q local_codex local_search start_codex.py
       - run: python -m unittest discover -s tests -v
         env:

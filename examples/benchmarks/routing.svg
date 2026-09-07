@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="350" viewBox="0 0 900 350">
+  <rect width="900" height="350" fill="white"/>
+  <g fill="#eef3ff" stroke="#18365b" stroke-width="3">
+    <rect x="30" y="135" width="180" height="70" rx="8"/>
+    <rect x="300" y="135" width="180" height="70" rx="8"/>
+    <rect x="650" y="30" width="190" height="70" rx="8"/>
+    <rect x="650" y="135" width="190" height="70" rx="8"/>
+    <rect x="650" y="240" width="190" height="70" rx="8"/>
+    <path d="M210 170 H300 M480 170 L650 65 M480 170 H650 M480 170 L650 275" fill="none"/>
+  </g>
+  <g font-family="sans-serif" font-size="22" fill="#10243e" text-anchor="middle">
+    <text x="120" y="178">Codex CLI</text><text x="390" y="178">Router</text>
+    <text x="745" y="73">Plan</text><text x="745" y="178">Build</text>
+    <text x="745" y="283">Vision</text>
+  </g>
+</svg>

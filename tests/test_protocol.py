@@ -76,7 +76,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual("exec_command", completed["output"][0]["name"])
         self.assertEqual({"cmd": "pwd"}, json.loads(completed["output"][0]["arguments"]))
 
-    def test_host_skill_blocks_are_removed(self):
+    def test_host_skill_blocks_are_preserved(self):
         items = [
             {
                 "type": "message",
@@ -88,8 +88,12 @@ class ProtocolTests(unittest.TestCase):
             }
         ]
         filtered = filter_input(items)
-        self.assertEqual(1, len(filtered[0]["content"]))
-        self.assertIn("permissions", filtered[0]["content"][0]["text"])
+        self.assertEqual(items, filtered)
+        self.assertIsNot(items[0], filtered[0])
+
+    def test_unknown_tool_never_becomes_shell(self):
+        with self.assertRaises(ValueError):
+            canonical_tool_name("unknown_delete", {"exec_command"})
 
     def test_complete_response_can_be_rendered_as_sse(self):
         response = {

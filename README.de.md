@@ -2,10 +2,18 @@
 
 **English:** [README.md](README.md) · **Deutsch:** Diese Seite
 
-LocalCodex verbindet die echte OpenAI Codex CLI vollständig lokal mit Ollama. Ein lokaler
-Responses-Router wählt automatisch zwischen Qwen-Planungs-, Coding- und Vision-Modellen, stellt
-eine private SearXNG-Websuche bereit und liefert exakte Sitzungs- und Langzeitstatistiken an einen
+LocalCodex wählt im Codex-CLI-Workflow automatisch lokale Ollama-Modelle für Planung, Coding,
+Bildeingaben und Fehlerbehebung aus. Der Responses-Router verwaltet Modell-Aliase, bietet
+optionale SearXNG-Websuche und liefert Sitzungs- und Langzeitstatistiken an einen
 nativen Dear-ImGui-Monitor.
+
+Codex unterstützt Ollama bereits direkt. LocalCodex ergänzt automatischen Modellwechsel nach
+Aufgabe, Modellverwaltung und einen nativen Monitor. Siehe [Vergleich und Kompatibilitätsgrenzen](docs/compatibility.md).
+Unabhängiges Community-Projekt unter [AGPL-3.0-only](LICENSE).
+
+**Einstieg:** [Modellkonfiguration](examples/localcodex.toml) · [Architektur](docs/architecture.md) ·
+[Mitwirken](CONTRIBUTING.md) · [Benchmark-Ablauf](examples/benchmarks/README.md).
+Hardwaremessungen und eine echte Demo-Aufnahme stehen noch aus; bessere Qualität oder Geschwindigkeit wird nicht behauptet.
 
 > Die Bedienung entspricht dem Codex-Workflow, die Modellqualität ist jedoch von den lokal
 > installierten Qwen-Modellen und der verfügbaren Hardware abhängig.
@@ -14,8 +22,8 @@ nativen Dear-ImGui-Monitor.
 
 - Lokaler Codex-Provider auf `127.0.0.1`; Cloud-Modell-Overrides werden blockiert.
 - Automatisches Routing zwischen `qwen3.8:27b`, `qwen3.6:35b-a3b` und `qwen3-vl:30b`.
-- Maximaler `xhigh`-Reasoning-Level, ohne Rohgedanken oder Denkzusammenfassungen zu speichern.
-- Kostenlose aktuelle Websuche über einen lokalen SearXNG-Container.
+- Modellquelle, Kontext und Reasoning sind pro Rolle konfigurierbar; Denkzusammenfassungen werden nicht gespeichert.
+- Optionale Websuche über lokales SearXNG; Suchanfragen erreichen weiterhin externe Suchmaschinen.
 - Exakte Ollama-Usage-Werte pro Codex-Thread sowie 24h-/7d-/30d-/Gesamtstatistiken.
 - Native Windows-x64- und Linux-x64-Oberfläche mit SDL3, Dear ImGui und ImPlot.
 - Automatisches Entladen ausschließlich der LocalCodex-Ollama-Aliase nach der letzten Sitzung.
@@ -92,9 +100,17 @@ API-Endpunkte:
 
 Das Dashboard empfängt Livewerte über einen persistenten lokalen SSE-Stream und nutzt nur bei
 Bedarf niedrigfrequentes Polling. Es zeigt Turn-, Sitzungs- und Gesamt-Tokens/Ersparnis, TTFT,
-Tokens/s, Kontextauslastung, Modellrolle, Ollama-RAM/VRAM, Phase und das letzte Werkzeug. Der
-Tokens/s-Graph skaliert automatisch über die gesamte Sitzung und erhält Spitzen in einem
-begrenzten Speicher.
+aktuelle und durchschnittliche Tokens/s, Kontextauslastung, Codex-Modus und -Phase, den gerouteten
+Alias, das Quellmodell und das letzte Werkzeug. Der Tokens/s-Graph bietet Ansichten für die letzten
+120 Sekunden, den aktuellen Turn und die ganze Sitzung. Beide Achsen skalieren auf den gewählten
+Bereich; eine spitzenerhaltende Komprimierung begrenzt den Speicherbedarf.
+
+CPU- und RAM-Auslastung stammen aus nativen Betriebssystem-Schnittstellen. GPU-Auslastung und
+globale VRAM-Nutzung werden bevorzugt über NVML, ersatzweise unter Windows über PDH/DXGI und unter
+Linux über DRM-sysfs ermittelt. Die separate Modellbelegung stammt weiterhin aus Ollamas `/api/ps`.
+Nicht unterstützte Werte erscheinen als `Nicht verfügbar`; es werden dafür keine Hilfsprozesse
+gestartet. Bei sichtbarem Fenster wird einmal pro Sekunde, im Hintergrund alle fünf Sekunden
+gemessen.
 
 Beim Ende der letzten Launcher-Lease entlädt der Router nur
 `local-codex-plan:latest`, `local-codex-build:latest` und

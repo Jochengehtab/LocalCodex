@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-import sqlite3
+from .database import open_database
 import threading
 import time
 from dataclasses import dataclass
@@ -86,7 +86,7 @@ class UsageStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self._lock = threading.RLock()
-        self._db = sqlite3.connect(path, timeout=10, check_same_thread=False)
+        self._db = open_database(path)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA foreign_keys=ON")
         self._db.execute(

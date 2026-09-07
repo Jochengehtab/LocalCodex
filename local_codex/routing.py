@@ -89,7 +89,9 @@ def turn_metadata(headers: Mapping[str, str], body: Mapping[str, Any]) -> dict[s
     raw = headers.get("x-codex-turn-metadata") or headers.get("X-Codex-Turn-Metadata")
     if raw:
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             pass
     metadata = body.get("client_metadata")
@@ -108,7 +110,7 @@ class TurnRouter:
     def __init__(self, settings: RuntimeSettings = SETTINGS, max_turns: int = 256):
         self.settings = settings
         self.max_turns = max_turns
-        self._turns: OrderedDict[str, tuple[str, float]] = OrderedDict()
+        self._turns: OrderedDict[tuple[str, str], tuple[str, float]] = OrderedDict()
         self._lock = threading.Lock()
 
     def choose(self, body: Mapping[str, Any], headers: Mapping[str, str]) -> RouteDecision:
@@ -126,9 +128,10 @@ class TurnRouter:
         turn_id = str(metadata.get("turn_id") or headers.get("x-client-request-id") or session_id)
         current_input = body.get("input", [])
         request_text = latest_user_text(current_input)
+        turn_key = (session_id, turn_id)
 
         with self._lock:
-            existing = self._turns.get(turn_id)
+            existing = self._turns.get(turn_key)
             if contains_image(current_input):
                 model, reason = self.settings.vision_model, "image input"
             elif has_tool_error(current_input):
@@ -140,8 +143,8 @@ class TurnRouter:
             else:
                 model, reason = self.settings.build_model, "implementation default"
 
-            self._turns[turn_id] = (model, time.time())
-            self._turns.move_to_end(turn_id)
+            self._turns[turn_key] = (model, time.time())
+            self._turns.move_to_end(turn_key)
             while len(self._turns) > self.max_turns:
                 self._turns.popitem(last=False)
 

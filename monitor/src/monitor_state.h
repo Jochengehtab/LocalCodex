@@ -28,7 +28,10 @@ struct MonitorState {
     std::string session_id;
     std::string turn_id;
     std::string role;
+    std::string source_model;
+    std::string route_reason;
     std::string last_tool;
+    double sampled_at{};
     double updated_at{};
     std::int64_t turn_input{};
     std::int64_t turn_output{};
@@ -39,6 +42,8 @@ struct MonitorState {
     std::int64_t total_input{};
     std::int64_t total_output{};
     double tokens_per_second{};
+    double average_tokens_per_second{};
+    bool tokens_per_second_estimated{};
     double ttft_seconds{};
     double elapsed_seconds{};
     double session_saved_usd{};
@@ -55,12 +60,32 @@ struct MonitorState {
     std::vector<SessionRow> sessions;
 };
 
-struct GraphPoint { double x{}; double y{}; };
+struct GraphPoint {
+    double x{};
+    double y{};
+    std::string turn_id;
+    std::string phase;
+    bool estimated{};
+};
+
+enum class GraphRange { Live, Turn, Session };
+
+struct GraphView {
+    std::vector<GraphPoint> points;
+    double x_min{};
+    double x_max{1.0};
+    double y_max{5.0};
+    double current{};
+    double average{};
+    double maximum{};
+    bool has_output{};
+};
 
 class SessionGraph {
 public:
-    void add(const MonitorState& state);
+    void add(const MonitorState& state, double monotonic_seconds);
     const std::vector<GraphPoint>& points() const { return points_; }
+    GraphView view(GraphRange range, const std::string& current_turn) const;
     double x_max() const;
     double y_max() const;
 private:
@@ -68,7 +93,7 @@ private:
     std::string session_id_;
     std::string turn_id_;
     double started_at_{};
-    double last_at_{};
+    double last_at_{-1.0};
     std::vector<GraphPoint> points_;
 };
 

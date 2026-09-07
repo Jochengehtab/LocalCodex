@@ -1,10 +1,45 @@
 import unittest
+import json
+import tempfile
+from dataclasses import asdict
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import start_codex
+from local_codex.config import ModelConfig
 
 
 class LauncherTests(unittest.TestCase):
+    @patch("start_codex.subprocess.run")
+    def test_changed_profiles_trigger_alias_setup_not_config_refresh(self, run):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "config.toml").touch()
+            (home / "localcodex.toml").write_text(
+                'schema_version = 1\n[models.build]\ncontext = 16384\n', encoding="utf-8"
+            )
+            (home / "runtime.json").write_text(json.dumps({
+                "config_version": 11, "model_profiles": asdict(ModelConfig()),
+                "monitor": {"wsl_executable": str(home / "config.toml")},
+            }), encoding="utf-8")
+            with patch("start_codex.LOCAL_HOME", home):
+                start_codex.ensure_setup(refresh_config=True)
+            self.assertNotIn("--refresh-config", run.call_args.args[0])
+            self.assertIn("local_codex.setup", run.call_args.args[0])
+
+    @patch("start_codex.subprocess.run")
+    def test_unchanged_profiles_do_not_recreate_aliases(self, run):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "config.toml").touch()
+            (home / "runtime.json").write_text(json.dumps({
+                "config_version": 11, "model_profiles": asdict(ModelConfig()),
+                "monitor": {"wsl_executable": str(home / "config.toml")},
+            }), encoding="utf-8")
+            with patch("start_codex.LOCAL_HOME", home):
+                start_codex.ensure_setup()
+            run.assert_not_called()
+
     def test_setup_context_arguments_are_forwarded(self):
         self.assertEqual(
             ["--context", "65536"],
@@ -15,6 +50,17 @@ class LauncherTests(unittest.TestCase):
             start_codex.setup_context_arguments(["--context=131072"]),
         )
         self.assertEqual([], start_codex.setup_context_arguments(["--benchmark"]))
+
+    @patch("start_codex.subprocess.run")
+    def test_refresh_config_is_forwarded_without_full_install(self, run):
+        with patch("start_codex.LOCAL_HOME") as local_home:
+            local_home.__truediv__.return_value.exists.return_value = True
+            local_home.__truediv__.return_value.is_file.return_value = False
+            local_home.__truediv__.return_value.read_text.return_value = "{}"
+            start_codex.ensure_setup(refresh_config=True, build_monitor=True)
+        command = run.call_args.args[0]
+        self.assertIn("--refresh-config", command)
+        self.assertIn("--build-monitor", command)
 
     @patch("start_codex.subprocess.Popen")
     @patch("start_codex.router_ready", side_effect=[False, True])

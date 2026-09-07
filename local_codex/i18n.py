@@ -12,6 +12,14 @@ SUPPORTED_LANGUAGES: Final = ("de", "en")
 
 _MESSAGES: Final[dict[str, dict[str, str]]] = {
     "de": {
+        "request.queue_full": "Die lokale Warteschlange ist voll.",
+        "request.cancelled": "Anfrage abgebrochen.",
+        "request.timeout": "Zeitlimit der Anfrage überschritten.",
+        "request.continuation": "Vorherige Antwort für diese Sitzung fehlt oder ist abgelaufen. Mit vollständigem Kontext neu beginnen.",
+        "request.model_invalid": "Das Modell lieferte eine ungültige oder nicht unterstützte Antwort.",
+        "request.model_failed": "Die lokale Modellanfrage ist fehlgeschlagen. Bitte codex-local doctor ausführen.",
+        "setup.capability": "Modell {model} unterstützt die benötigte Fähigkeit {capability} nicht.",
+        "setup.cloud_model": "Cloud-Modell {model} ist für lokale Inferenz nicht erlaubt.",
         "release.none": "Kein stabiles GitHub-Release gefunden.",
         "release.rollback_only": "Rollback ist nur für eine Release-Installation verfügbar.",
         "release.no_previous": "Keine ältere installierte Version gefunden.",
@@ -42,6 +50,14 @@ _MESSAGES: Final[dict[str, dict[str, str]]] = {
         "setup.installed": "LocalCodex eingerichtet: {context} Kontext-Tokens",
     },
     "en": {
+        "request.queue_full": "The local request queue is full.",
+        "request.cancelled": "Request cancelled.",
+        "request.timeout": "Request deadline exceeded.",
+        "request.continuation": "Previous response is missing or expired for this session. Start again with full context.",
+        "request.model_invalid": "The model returned an invalid or unsupported response.",
+        "request.model_failed": "The local model request failed. Please run codex-local doctor.",
+        "setup.capability": "Model {model} does not support required capability {capability}.",
+        "setup.cloud_model": "Cloud model {model} is not allowed for local inference.",
         "release.none": "No stable GitHub release found.",
         "release.rollback_only": "Rollback is only available for a release installation.",
         "release.no_previous": "No older installed version found.",

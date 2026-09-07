@@ -10,6 +10,11 @@ set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
 set(SDL_TESTS OFF CACHE BOOL "" FORCE)
 set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(HTTPLIB_INSTALL OFF CACHE BOOL "" FORCE)
+if(MINGW)
+  # MinGW headers lack GetAddrInfoExCancel. The monitor accepts numeric loopback
+  # addresses only, so synchronous address parsing does not need a DNS timeout.
+  set(HTTPLIB_USE_NON_BLOCKING_GETADDRINFO OFF CACHE BOOL "" FORCE)
+endif()
 
 FetchContent_Declare(SDL
   URL https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.4.14.tar.gz
@@ -45,12 +50,19 @@ target_include_directories(localcodex_imgui PUBLIC
   ${implot_SOURCE_DIR})
 target_link_libraries(localcodex_imgui PUBLIC SDL3::SDL3-static OpenGL::GL)
 
-add_library(localcodex_monitor_core STATIC src/monitor_state.cpp)
+add_library(localcodex_monitor_core STATIC
+  src/monitor_state.cpp
+  src/system_metrics.cpp)
 target_include_directories(localcodex_monitor_core PUBLIC src)
 target_link_libraries(localcodex_monitor_core PUBLIC nlohmann_json::nlohmann_json)
+if(WIN32)
+  target_link_libraries(localcodex_monitor_core PUBLIC dxgi pdh)
+elseif(CMAKE_DL_LIBS)
+  target_link_libraries(localcodex_monitor_core PUBLIC ${CMAKE_DL_LIBS})
+endif()
 
 add_executable(localcodex-monitor WIN32 src/main.cpp)
-target_sources(localcodex-monitor PRIVATE src/i18n.cpp)
+target_sources(localcodex-monitor PRIVATE src/i18n.cpp src/monitor_client.cpp)
 target_compile_definitions(localcodex-monitor PRIVATE
   CPPHTTPLIB_OPEN_TIMEOUT_SECOND=1
   CPPHTTPLIB_READ_TIMEOUT_SECOND=2
@@ -66,6 +78,7 @@ endif()
 
 install(TARGETS localcodex-monitor RUNTIME DESTINATION .)
 install(FILES ${PROJECT_SOURCE_DIR}/THIRD_PARTY_NOTICES.md DESTINATION .)
+install(FILES ${PROJECT_SOURCE_DIR}/LICENSE DESTINATION .)
 install(FILES ${imgui_SOURCE_DIR}/LICENSE.txt DESTINATION licenses RENAME LICENSE.DearImGui.txt)
 install(FILES ${implot_SOURCE_DIR}/LICENSE DESTINATION licenses RENAME LICENSE.ImPlot.txt)
 install(FILES ${sdl_SOURCE_DIR}/LICENSE.txt DESTINATION licenses RENAME LICENSE.SDL3.txt)

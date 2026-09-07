@@ -109,6 +109,8 @@ jobs:
         shell: pwsh
         run: ./install.ps1 -DryRun -Version "${{ needs.prepare.outputs.version }}"
       - run: cmake --install build --config Release --prefix stage
+      - name: Package corresponding sources
+        run: python scripts/package_sources.py "localcodex-source-${{ matrix.platform }}-v${{ needs.prepare.outputs.version }}.tar.gz" --deps build/_deps
       - name: Package Linux monitor
         if: runner.os == 'Linux'
         run: tar -C stage -czf "localcodex-monitor-${{ matrix.platform }}-v${{ needs.prepare.outputs.version }}.tar.gz" .
@@ -119,7 +121,9 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: monitor-${{ matrix.platform }}
-          path: localcodex-monitor-*
+          path: |
+            localcodex-monitor-*
+            localcodex-source-*
 
   publish:
     needs: [prepare, core, monitor]

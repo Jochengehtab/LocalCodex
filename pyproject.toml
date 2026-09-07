@@ -1,0 +1,17 @@
+[tool.localcodex]
+license = "AGPL-3.0-only"
+python = ">=3.12"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 110
+extend-exclude = ["build", "out", "dist", ".codex-local", ".venv"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["local_codex/config.py", "local_codex/database.py", "local_codex/ports.py", "local_codex/ollama.py"]
+follow_imports = "silent"

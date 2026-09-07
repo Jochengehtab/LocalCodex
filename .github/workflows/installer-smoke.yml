@@ -2,10 +2,10 @@ name: Installer smoke tests
 
 on:
   pull_request:
-    paths: ["install.sh", "install.ps1", "local_codex/releases.py", ".github/workflows/installer-smoke.yml"]
+    paths: ["install.sh", "install.ps1", "requirements-local-codex.txt", "constraints-runtime.txt", "local_codex/releases.py", ".github/workflows/installer-smoke.yml"]
   push:
     branches: [main]
-    paths: ["install.sh", "install.ps1", "local_codex/releases.py", ".github/workflows/installer-smoke.yml"]
+    paths: ["install.sh", "install.ps1", "requirements-local-codex.txt", "constraints-runtime.txt", "local_codex/releases.py", ".github/workflows/installer-smoke.yml"]
   workflow_dispatch:
 
 permissions:

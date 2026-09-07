@@ -33,6 +33,7 @@ void apply_snapshot(MonitorState& state, const nlohmann::json& value) {
     state.session_id = value_or<std::string>(value, "session_id");
     state.turn_id = value_or<std::string>(value, "turn_id");
     state.updated_at = value_or<double>(value, "updated_at");
+    state.sampled_at = value_or<double>(value, "sampled_at", state.updated_at);
     state.elapsed_seconds = value_or<double>(value, "elapsed_seconds");
 
     const auto& tokens = object_or_empty(value, "tokens");
@@ -42,6 +43,10 @@ void apply_snapshot(MonitorState& state, const nlohmann::json& value) {
 
     const auto& performance = object_or_empty(value, "performance");
     state.tokens_per_second = value_or<double>(performance, "tokens_per_second");
+    state.average_tokens_per_second = value_or<double>(
+        performance, "average_tokens_per_second", state.tokens_per_second
+    );
+    state.tokens_per_second_estimated = value_or<bool>(performance, "estimated");
     state.ttft_seconds = value_or<double>(performance, "time_to_first_token_seconds");
 
     const auto& session = object_or_empty(value, "session");
@@ -52,7 +57,9 @@ void apply_snapshot(MonitorState& state, const nlohmann::json& value) {
                                                value_or<double>(session, "estimated_saved_usd"));
 
     const auto& turn = object_or_empty(value, "turn");
-    state.role = value_or<std::string>(turn, "role");
+    state.role = value_or<std::string>(turn, "mode", value_or<std::string>(turn, "role"));
+    state.source_model = value_or<std::string>(turn, "source_model");
+    state.route_reason = value_or<std::string>(turn, "route_reason");
     state.last_tool = value_or<std::string>(turn, "last_tool");
     const auto& total = object_or_empty(value, "total");
     state.total_input = value_or<std::int64_t>(total, "live_input_tokens",
@@ -75,18 +82,23 @@ void apply_snapshot(MonitorState& state, const nlohmann::json& value) {
     state.vram_size_bytes = value_or<std::int64_t>(runtime, "size_vram_bytes");
 }
 
-void SessionGraph::add(const MonitorState& state) {
-    if (state.session_id.empty() || state.updated_at <= 0 || !std::isfinite(state.tokens_per_second)) return;
+void SessionGraph::add(const MonitorState& state, double monotonic_seconds) {
+    if (state.session_id.empty() || !std::isfinite(state.tokens_per_second)) return;
     if (session_id_ != state.session_id) {
         session_id_ = state.session_id; turn_id_.clear(); points_.clear();
-        started_at_ = state.updated_at; last_at_ = 0;
+        started_at_ = monotonic_seconds; last_at_ = -1.0;
     }
-    if (state.updated_at <= last_at_) return;
-    const double x = std::max(0.0, state.updated_at - started_at_);
-    if (!turn_id_.empty() && turn_id_ != state.turn_id) points_.push_back({x, 0.0});
+    const double x = std::max(0.0, monotonic_seconds - started_at_);
+    if (x <= last_at_) return;
+    if (!turn_id_.empty() && turn_id_ != state.turn_id) {
+        points_.push_back({x, 0.0, state.turn_id, "turn", false});
+    }
     turn_id_ = state.turn_id;
-    points_.push_back({x, std::max(0.0, state.tokens_per_second)});
-    last_at_ = state.updated_at;
+    points_.push_back({
+        x, std::max(0.0, state.tokens_per_second), state.turn_id,
+        state.phase, state.tokens_per_second_estimated,
+    });
+    last_at_ = x;
     if (points_.size() > 4096) compact();
 }
 
@@ -107,11 +119,57 @@ void SessionGraph::compact() {
     points_.swap(reduced);
 }
 
+namespace {
+double nice_upper_limit(double maximum) {
+    const double requested = std::max(5.0, maximum * 1.2);
+    const double magnitude = std::pow(10.0, std::floor(std::log10(requested)));
+    const double normalized = requested / magnitude;
+    const double step = normalized <= 1.0 ? 1.0 : normalized <= 2.0 ? 2.0 : normalized <= 5.0 ? 5.0 : 10.0;
+    return step * magnitude;
+}
+}  // namespace
+
+GraphView SessionGraph::view(GraphRange range, const std::string& current_turn) const {
+    GraphView result;
+    const double session_latest = points_.empty() ? 0.0 : points_.back().x;
+    double offset{};
+    if (range == GraphRange::Live) {
+        result.x_max = std::max(10.0, session_latest);
+        result.x_min = std::max(0.0, result.x_max - 120.0);
+    } else if (range == GraphRange::Session) {
+        result.x_max = std::max(10.0, session_latest);
+    }
+    for (const auto& point : points_) {
+        if (range == GraphRange::Live && point.x < result.x_min) continue;
+        if (range == GraphRange::Turn && point.turn_id != current_turn) continue;
+        result.points.push_back(point);
+    }
+    if (range == GraphRange::Turn && !result.points.empty()) {
+        offset = result.points.front().x;
+        for (auto& point : result.points) point.x -= offset;
+        result.x_max = std::max(10.0, result.points.back().x);
+    }
+    double sum{};
+    std::size_t samples{};
+    for (const auto& point : result.points) {
+        result.maximum = std::max(result.maximum, point.y);
+        if (point.y > 0) {
+            result.has_output = true;
+            sum += point.y;
+            ++samples;
+        }
+    }
+    if (!result.points.empty()) result.current = result.points.back().y;
+    if (samples) result.average = sum / double(samples);
+    result.y_max = nice_upper_limit(result.maximum);
+    return result;
+}
+
 double SessionGraph::x_max() const { return points_.empty() ? 1.0 : std::max(1.0, points_.back().x); }
 double SessionGraph::y_max() const {
     double maximum = 1.0;
     for (const auto& point : points_) maximum = std::max(maximum, point.y);
-    return maximum * 1.1;
+    return nice_upper_limit(maximum);
 }
 
 void apply_statistics(MonitorState& state, const nlohmann::json& value) {

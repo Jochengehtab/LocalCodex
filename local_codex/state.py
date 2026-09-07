@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 import time
 import zlib
+from .database import open_database
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,10 @@ def _unpack(value: bytes) -> Any:
     return json.loads(zlib.decompress(value).decode("utf-8"))
 
 
+class ContinuationError(ValueError):
+    pass
+
+
 class ResponseStateStore:
     def __init__(self, path: Path, ttl_seconds: int, max_rows: int):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -39,7 +43,7 @@ class ResponseStateStore:
         self.ttl_seconds = ttl_seconds
         self.max_rows = max_rows
         self._lock = threading.Lock()
-        self._db = sqlite3.connect(path, check_same_thread=False)
+        self._db = open_database(path)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute(
             """
@@ -56,17 +60,17 @@ class ResponseStateStore:
         self._db.commit()
         self.prune()
 
-    def expand(self, previous_response_id: str | None, current_input: Any) -> list[dict[str, Any]]:
+    def expand(self, previous_response_id: str | None, current_input: Any, *, session_id: str | None = None) -> list[dict[str, Any]]:
         current = normalize_input(current_input)
         if not previous_response_id:
             return current
         with self._lock:
             row = self._db.execute(
-                "SELECT full_input, output FROM responses WHERE response_id = ?",
+                "SELECT full_input, output, session_id, created_at FROM responses WHERE response_id = ?",
                 (previous_response_id,),
             ).fetchone()
-        if not row:
-            return current
+        if not row or row[3] < time.time() - self.ttl_seconds or (session_id is not None and row[2] != session_id):
+            raise ContinuationError("Previous response is unavailable for this session; start a new turn with full context")
         return self._deduplicate([*_unpack(row[0]), *_unpack(row[1]), *current])
 
     def put(
@@ -110,6 +114,10 @@ class ResponseStateStore:
                 (self.max_rows,),
             )
             self._db.commit()
+
+    def close(self) -> None:
+        with self._lock:
+            self._db.close()
 
     @staticmethod
     def _deduplicate(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

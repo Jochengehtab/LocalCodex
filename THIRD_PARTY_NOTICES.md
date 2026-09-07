@@ -1,5 +1,10 @@
 # Third-party components
 
+Original LocalCodex code is licensed under AGPL-3.0-only; see LICENSE. Components below
+retain their original licenses. Native release assets are accompanied by matching
+`localcodex-source-PLATFORM-vVERSION.tar.gz` archives containing project and dependency
+sources. See docs/source-build.md for rebuilding from those archives.
+
 The native monitor downloads pinned source archives during its reproducible build. Release
 packages include the applicable license texts.
 

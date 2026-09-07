@@ -1,0 +1,18 @@
+# Copy to $LOCAL_CODEX_HOME/localcodex.toml, then run codex-local setup.
+# Source models must already be installed in local Ollama.
+schema_version = 1
+
+[models.plan]
+source = "qwen3.8:27b"
+context = 8192
+reasoning = "xhigh"
+
+[models.build]
+source = "qwen3.6:35b-a3b"
+context = 8192
+reasoning = "xhigh"
+
+[models.vision]
+source = "qwen3-vl:30b"
+context = 8192
+reasoning = "xhigh"

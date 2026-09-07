@@ -101,7 +101,7 @@ if [[ "$SKIP_SETUP" == 0 && "$SKIP_SEARCH" == 0 ]] && ! command -v docker >/dev/
 fi
 
 mkdir -p "$TARGET" "$DATA_ROOT" "$BIN_DIR"
-tar --exclude=.git --exclude=.venv --exclude=.codex-local --exclude=build -cf - -C "$SCRIPT_ROOT" . | tar -xf - -C "$TARGET"
+tar --exclude=.git --exclude=.venv --exclude=.codex-local --exclude=build --exclude=out --exclude=dist --exclude=.mypy_cache --exclude=.ruff_cache --exclude=__pycache__ -cf - -C "$SCRIPT_ROOT" . | tar -xf - -C "$TARGET"
 run python3 -m venv "$TARGET/.venv"
 run "$TARGET/.venv/bin/pip" install --disable-pip-version-check -r "$TARGET/requirements-local-codex.txt"
 
@@ -119,17 +119,19 @@ if [[ "$SKIP_SETUP" == 0 && -z "${WSL_DISTRO_NAME:-}" ]]; then
 fi
 
 if [[ "$SKIP_SETUP" == 0 && "$SKIP_MODELS" == 0 ]]; then
-  echo "Modelle: qwen3.8:27b, qwen3.6:35b-a3b und qwen3-vl:30b (je nach Quantisierung zusammen typischerweise etwa 55-70 GB)."
-fi
-if [[ "$SKIP_SETUP" == 0 && "$SKIP_MODELS" == 0 ]] && confirm "Diese drei Qwen-Modelle jetzt herunterladen?"; then
-  run ollama pull qwen3.8:27b
-  run ollama pull qwen3.6:35b-a3b
-  run ollama pull qwen3-vl:30b
+  export LOCAL_CODEX_HOME="$DATA_ROOT"
+  model_list="$(cd "$TARGET" && .venv/bin/python -c 'from local_codex.settings import SOURCE_MODELS; print("\n".join(dict.fromkeys(SOURCE_MODELS.values())))')"
+  printf 'Ollama source models / Quellmodelle:\n%s\n' "$model_list"
+  if confirm "Download these models / Diese Modelle herunterladen?"; then
+    while IFS= read -r source_model; do
+      run ollama pull "$source_model"
+    done <<< "$model_list"
+  fi
 fi
 
 if [[ "$SKIP_SETUP" == 0 ]]; then
   export LOCAL_CODEX_HOME="$DATA_ROOT"
-  run "$TARGET/.venv/bin/python" "$TARGET/start_codex.py" setup --context 8192
+  run "$TARGET/.venv/bin/python" "$TARGET/start_codex.py" setup
 fi
 
 if [[ "$SKIP_SEARCH" == 0 ]] && ! command -v docker >/dev/null; then

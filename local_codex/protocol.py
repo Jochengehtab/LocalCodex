@@ -43,6 +43,21 @@ def offered_function_names(tools: Any) -> set[str]:
     return names
 
 
+def normalize_tools(tools: list[Any]) -> list[dict[str, Any]]:
+    """Accept the tested Responses function contract without silently dropping tools."""
+    result = []
+    names: set[str] = set()
+    for tool in tools:
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            raise ValueError("Unsupported tool schema; this adapter requires Responses function tools")
+        name = tool.get("name")
+        if not isinstance(name, str) or not name or name in names:
+            raise ValueError("Tool names must be nonempty and unique")
+        names.add(name)
+        result.append(copy.deepcopy(tool))
+    return result
+
+
 def _strip_prefix(name: str) -> str:
     for prefix in PREFIXES:
         if name.startswith(prefix):
@@ -72,7 +87,7 @@ def canonical_tool_name(name: str, offered: set[str]) -> str:
                 return sorted(matches)[0]
     if lowered in {"apply_patch", "applypatch", "edit", "write"} and "exec_command" in offered:
         return "exec_command"
-    return "exec_command" if "exec_command" in offered else name
+    raise ValueError(f"Unsupported model tool: {name}")
 
 
 def _patch_command(patch: str) -> str:
@@ -264,27 +279,5 @@ def transform_sse(payload: str, offered: set[str]) -> tuple[bytes, dict[str, Any
 
 
 def filter_input(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for item in items:
-        if item.get("type") != "message":
-            result.append(item)
-            continue
-        copied = copy.deepcopy(item)
-        content = copied.get("content")
-        if not isinstance(content, list):
-            result.append(copied)
-            continue
-        filtered = []
-        for block in content:
-            text = block.get("text") if isinstance(block, dict) else None
-            if isinstance(text, str) and (
-                text.lstrip().startswith("<skills_instructions>")
-                or text.lstrip().startswith("<recommended_plugins>")
-                or text.lstrip().startswith("<plugins_instructions>")
-            ):
-                continue
-            filtered.append(block)
-        if filtered:
-            copied["content"] = filtered
-            result.append(copied)
-    return result
+    """Preserve host instructions; reasoning must not be persisted or replayed."""
+    return [copy.deepcopy(item) for item in items if item.get("type") != "reasoning"]

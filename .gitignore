@@ -3,6 +3,8 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Generated local Codex state and secrets (recreated by setup)
 .codex-local/

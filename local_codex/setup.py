@@ -21,14 +21,19 @@ from typing import Any
 import httpx
 
 from .i18n import tr
-from .settings import LOCAL_HOME, LOCAL_INSTRUCTIONS, MODELS_DIR, ROOT, SETTINGS, STATE_DIR
+from .settings import (
+    LOCAL_HOME,
+    LOCAL_INSTRUCTIONS,
+    MODELS_DIR,
+    ROOT,
+    SETTINGS,
+    SOURCE_MODELS,
+    MODEL_CONFIG,
+    STATE_DIR,
+)
 
 
-RAW_MODELS = {
-    "plan": "qwen3.8:27b",
-    "build": "qwen3.6:35b-a3b",
-    "vision": "qwen3-vl:30b",
-}
+RAW_MODELS = SOURCE_MODELS
 FINAL_MODELS = {
     "plan": SETTINGS.plan_model,
     "build": SETTINGS.build_model,
@@ -66,6 +71,11 @@ def verify_prerequisites() -> None:
     missing = [model for model in RAW_MODELS.values() if model not in installed]
     if missing:
         raise RuntimeError(tr("setup.missing_models", models=", ".join(missing)))
+    from .model_validation import validate_model_info
+    for role, profile in MODEL_CONFIG.profiles().items():
+        response = httpx.post(f"{SETTINGS.ollama_base_url}/api/show", json={"model": profile.source}, timeout=10.0, trust_env=False)
+        response.raise_for_status()
+        validate_model_info(profile.source, role, response.json(), profile.reasoning)
 
 
 def verify_benchmark_idle() -> None:
@@ -340,9 +350,10 @@ def benchmark_contexts(
 def generate_model_catalog(context: int) -> None:
     raw = run(["codex", "debug", "models", "--bundled"]).stdout
     catalog = json.loads(raw)
-    template = next(
-        model for model in catalog["models"] if model.get("slug") == "gpt-5.4"
-    )
+    candidates = [model for model in catalog.get("models", []) if isinstance(model, dict)]
+    if not candidates:
+        raise RuntimeError("Codex returned no model catalog; check the supported version matrix")
+    template = next((model for model in candidates if model.get("slug") == "gpt-5.4"), candidates[0]).copy()
     template["slug"] = SETTINGS.public_model
     template["display_name"] = "Local Qwen Codex"
     template["description"] = "Local Ollama router for Qwen coding and vision models"
@@ -367,9 +378,9 @@ def generate_model_catalog(context: int) -> None:
     template["tool_mode"] = None
     template["apply_patch_tool_type"] = None
     template["base_instructions"] = LOCAL_INSTRUCTIONS
-    template["include_skills_usage_instructions"] = False
-    template["include_plugin_usage_instructions"] = False
-    template["include_apps_usage_instructions"] = False
+    template["include_skills_usage_instructions"] = True
+    template["include_plugin_usage_instructions"] = True
+    template["include_apps_usage_instructions"] = True
     if isinstance(template.get("model_messages"), dict):
         template["model_messages"]["instructions_template"] = LOCAL_INSTRUCTIONS
     (LOCAL_HOME / "model_catalog.json").write_text(
@@ -652,8 +663,11 @@ def install(context: int | None, benchmark: bool, build_monitor: bool = False) -
                 )) for role in RAW_MODELS
             }
     else:
-        selected_context = context or previous_runtime.get("context_window", 8192)
-        selected_contexts = {role: int(selected_context) for role in RAW_MODELS}
+        selected_contexts = {
+            role: int(context or (profile.context if (LOCAL_HOME / "localcodex.toml").exists()
+                                 else previous_windows.get(role, previous_runtime.get("context_window", profile.context))))
+            for role, profile in MODEL_CONFIG.profiles().items()
+        }
     for role, source in RAW_MODELS.items():
         create_alias(FINAL_MODELS[role], source, selected_contexts[role])
     advertised_context = min(selected_contexts.values())
@@ -661,6 +675,7 @@ def install(context: int | None, benchmark: bool, build_monitor: bool = False) -
     write_codex_config(advertised_context)
     runtime = {
         "config_version": CONFIG_VERSION,
+        "model_profiles": asdict(MODEL_CONFIG),
         "context_window": advertised_context,
         "context_windows": selected_contexts,
         "models": FINAL_MODELS,
